@@ -1,4 +1,3 @@
-# main.py
 import os
 import json
 import time
@@ -10,13 +9,8 @@ import requests
 from threading import Thread
 
 # Telegram
-from telegram import (
-    Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
-)
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    ConversationHandler, MessageHandler, ContextTypes, filters
-)
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ConversationHandler, MessageHandler, ContextTypes, filters
 
 # FastAPI (webhook)
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -28,60 +22,35 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 # ----------------- CONFIG (SECRETS INSERTED) -----------------
-# --- DO NOT SHARE THIS FILE PUBLICLY ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
 NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
 CHANNEL_USERNAME = "@InfinityEarn2x"
-
-# IMPORTANT: set this to your app's public URL (Koyeb provides it after deploy).
-# Example: BASE_URL = "https://my-app.koyeb.app"
 BASE_URL = os.getenv("BASE_URL")
-  # <-- REPLACE with your real public URL before deploy
-
 PORT = int(os.getenv("PORT", "8000"))
 
 # 🔹 Load Firebase credentials
-firebase_config = os.getenv("FIREBASE_CONFIG")  # stored as secret in Koyeb
-
+firebase_config = os.getenv("FIREBASE_CONFIG")
 if not firebase_config:
     raise RuntimeError("❌ FIREBASE_CONFIG not set in environment variables!")
-
-# Parse the JSON string from secrets
 config_dict = json.loads(firebase_config)
-
-# Initialize Firebase
 if not firebase_admin._apps:
     cred = credentials.Certificate(config_dict)
     firebase_admin.initialize_app(cred)
-
-# Firestore client
 db = firestore.client()
+
 # ----------------- NowPayments / Packages -----------------
 NOWPAY_API = "https://api.nowpayments.io/v1"
-USDT_BSC_CODE = "usdtbsc"  # force BSC (BEP20) USDT
-
-PACKAGES = {
-    10: 0.33,
-    20: 0.66,
-    50: 1.66,
-    100: 3.33,
-    200: 6.66,
-    500: 16.66,
-    1000: 33.33,
-}
+USDT_BSC_CODE = "usdtbsc"
+PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
 PACKAGE_DAYS = 60
 MIN_WITHDRAW = 3.0
-
-# Firestore collections
 COL_USERS = db.collection("users")
 COL_DEPOSITS = db.collection("deposits")
 COL_WITHDRAWS = db.collection("withdrawals")
-
-# Conversation states for withdraw
 ASK_WD_ADDR, ASK_WD_AMOUNT = range(2)
 
-# FastAPI app (IPN)
+# FastAPI app
 api = FastAPI()
 
 # ----------------- FIREBASE UTILITIES -----------------
@@ -100,7 +69,7 @@ def ensure_user(uid: int, referrer_id: Optional[int] = None):
         "balance": 0.0,
         "verified": False,
         "created_at": firestore.SERVER_TIMESTAMP,
-        "referrer_id": referrer_id if referrer_id else None,
+        "referrer_id": referrer_id,
         "packages": [],
         "first_package_activated": False
     })
@@ -160,10 +129,9 @@ def get_min_amount():
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=10)
         resp.raise_for_status()
-        data = resp.json()
-        return float(data.get('min_amount', 5.0))  # fallback to 5 if fail
+        return float(resp.json().get('min_amount', 5.0))
     except Exception:
-        return 5.0  # fallback
+        return 5.0
 
 def nowpayments_create_payment(user_id: int) -> Dict[str, Any]:
     url = f"{NOWPAY_API}/payment"
@@ -215,7 +183,6 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
             tg_id = int(str(data.order_id).split("-")[0])
         except Exception:
             return {"ok": True}
-        # Record deposit
         COL_DEPOSITS.add({
             "user_id": tg_id,
             "payment_id": data.payment_id,
@@ -224,13 +191,17 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
             "status": status,
             "created_at": firestore.SERVER_TIMESTAMP
         })
-        # Credit user
         add_balance(tg_id, credited)
-        # Notify user (via Telegram)
         try:
             await app.bot.send_message(chat_id=tg_id, text=f"{credited} USDT Deposit Successfully")
         except Exception:
             pass
+    return {"ok": True}
+
+@api.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    update = await request.json()
+    await app.process_update(Update.de_json(update, app.bot))
     return {"ok": True}
 
 def run_ipn():
@@ -251,7 +222,6 @@ WELCOME_TEXT = (
 )
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # referral: /start ref<id>
     referrer = None
     if context.args:
         arg = context.args[0]
@@ -274,17 +244,14 @@ async def cb_verify_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    # Check membership in channel (bot must be admin)
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=uid)
         joined = member.status in ("member", "administrator", "creator")
     except Exception:
         joined = False
-
     if not joined:
         await q.edit_message_text("Join our channel and verify first.")
         return
-    # mark verified
     refobj = user_ref(uid)
     refobj.update({"verified": True})
     await q.edit_message_text(
@@ -304,23 +271,20 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         pay = nowpayments_create_payment(uid)
-        # prefer pay_address
         pay_address = pay.get("pay_address") or pay.get("wallet_address") or pay.get("payment_address")
         if not pay_address:
-            # fallback to invoice/payment url
             inv = pay.get("invoice_url") or pay.get("payment_url") or pay.get("url")
             if inv:
-                await update.message.reply_text(f"You receiving adress of USDT on BSC(Binance Smart Chain) is:\n{inv}\n\n(Open and pay on BSC/USDT)")
+                await update.message.reply_text(f"Your receiving address of USDT on BSC (Binance Smart Chain) is:\n{inv}\n\n(Open and pay on BSC/USDT)")
                 return
             await update.message.reply_text("Could not get deposit address. Try again later.")
             return
-        # Save deposit request record (optional)
         COL_DEPOSITS.add({
             "user_id": uid,
             "payment_response": pay,
             "created_at": firestore.SERVER_TIMESTAMP
         })
-        await update.message.reply_text(f"You receiving adress of USDT on BSC(Binance Smart Chain) is\n{pay_address}")
+        await update.message.reply_text(f"Your receiving address of USDT on BSC (Binance Smart Chain) is\n{pay_address}")
     except Exception as e:
         await update.message.reply_text(f"Error creating deposit address: {e}")
 
@@ -369,7 +333,6 @@ async def cb_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "last_claim_date": None
     }
     append_package(uid, pack)
-    # referral bonus for first package only
     fresher = get_user(uid)
     if not fresher.get("first_package_activated"):
         refid = fresher.get("referrer_id")
@@ -399,13 +362,11 @@ async def cmd_daily_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You already claimed today.")
         return
     if changed:
-        # write back updated packages
         ref = user_ref(uid)
         def txn(t):
             s = t.get(ref)
             data = s.to_dict()
             existing = data.get("packages", [])
-            # replace matching packages by name+start_ts
             idx = {(pp["name"], pp["start_ts"]): i for i, pp in enumerate(existing)}
             for p in packs:
                 key = (p["name"], p["start_ts"])
@@ -434,9 +395,8 @@ async def cmd_my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal = round(user.get("balance", 0.0), 8)
     await update.message.reply_text(f"Your current balance is {bal} USDT")
 
-# Withdraw conversation
 async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Enter your USDT withdrawal adress on BSC(Binance Smart Chain).", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("Enter your USDT withdrawal address on BSC (Binance Smart Chain).", reply_markup=ReplyKeyboardRemove())
     return ASK_WD_ADDR
 
 def is_bsc_address(addr: str) -> bool:
@@ -460,12 +420,11 @@ async def finalize_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Enter a valid number.")
         return ASK_WD_AMOUNT
     if amount < MIN_WITHDRAW:
-        await update.message.reply_text("insufficient withdrawal amount.")
+        await update.message.reply_text("Insufficient withdrawal amount.")
         return ConversationHandler.END
     if not deduct_balance(uid, amount):
         await update.message.reply_text("Insufficient balance.")
         return ConversationHandler.END
-    # store withdrawal request
     COL_WITHDRAWS.add({
         "user_id": uid,
         "address": context.user_data.get("wd_addr"),
@@ -473,7 +432,7 @@ async def finalize_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "pending",
         "created_at": firestore.SERVER_TIMESTAMP
     })
-    await update.message.reply_text("Withdraw Succesfull ! Your balance credit to your Binance account with in 24 hours.")
+    await update.message.reply_text("Withdrawal Successful! Your withdrawal will be credited to your wallet within 24 hours.")
     return ConversationHandler.END
 
 async def cancel_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -488,8 +447,6 @@ async def cmd_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ----------------- SETUP & RUN -----------------
 app = Application.builder().token(BOT_TOKEN).build()
-
-# command handlers
 app.add_handler(CommandHandler("start", cmd_start))
 app.add_handler(CallbackQueryHandler(cb_verify_channel, pattern="^verify_channel$"))
 app.add_handler(CommandHandler("deposit", cmd_deposit))
@@ -498,7 +455,6 @@ app.add_handler(CallbackQueryHandler(cb_package, pattern=r"^pkg:\d+$"))
 app.add_handler(CommandHandler("daily_reward", cmd_daily_reward))
 app.add_handler(CommandHandler("my_packages", cmd_my_packages))
 app.add_handler(CommandHandler("my_balance", cmd_my_balance))
-
 withdraw_conv = ConversationHandler(
     entry_points=[CommandHandler("withdraw", cmd_withdraw)],
     states={
@@ -508,17 +464,21 @@ withdraw_conv = ConversationHandler(
     fallbacks=[CommandHandler("cancel", cancel_withdraw)],
 )
 app.add_handler(withdraw_conv)
-
 app.add_handler(CommandHandler("referral_link", cmd_referral_link))
 
 if __name__ == "__main__":
-    # validate env (BASE_URL must be changed from placeholder)
     missing = []
     for name in ["BOT_TOKEN", "CHANNEL_USERNAME", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET", "BASE_URL"]:
         if not globals().get(name):
             missing.append(name)
     if missing:
         raise RuntimeError(f"Missing required config values: {', '.join(missing)}")
-    # run both IPN webserver and telegram polling
+    webhook_url = f"{BASE_URL}/telegram/webhook"
+    app.bot.set_webhook(webhook_url)
     Thread(target=run_ipn, daemon=True).start()
-    app.run_polling()
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="/telegram/webhook",
+        webhook_url=webhook_url
+    )
