@@ -9,18 +9,22 @@ import requests
 from threading import Thread
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ConversationHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ConversationHandler, MessageHandler, filters, ContextTypes
 from fastapi import FastAPI, Request, Header, HTTPException
 import uvicorn
 from pydantic import BaseModel
 import firebase_admin
 from firebase_admin import credentials, firestore
+from dotenv import load_dotenv  # Optional, for local testing
+
+# Load .env file for local testing (ignored on Koyeb)
+load_dotenv()
 
 # ----------------- CONFIG -----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
 NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
-CHANNEL_USERNAME = "@InfinityEarn2x"
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@InfinityEarn2x")
 BASE_URL = os.getenv("BASE_URL")  # Can be None initially
 PORT = int(os.getenv("PORT", "8000"))
 
@@ -151,15 +155,7 @@ def verify_nowpay_signature(raw_body: bytes, signature: str) -> bool:
     except Exception:
         return False
 
-# ----------------- FASTAPI IPN -----------------
-class IPNBody(BaseModel):
-    payment_status: Optional[str]
-    actually_paid: Optional[float]
-    pay_amount: Optional[float]
-    pay_currency: Optional[str]
-    order_id: Optional[str]
-    payment_id: Optional[int]
-
+# ----------------- FASTAPI ENDPOINTS -----------------
 @api.get("/")
 def root():
     return {"ok": True}
@@ -169,7 +165,7 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
     raw = await request.body()
     if not x_nowpayments_sig or not verify_nowpay_signature(raw, x_nowpayments_sig):
         raise HTTPException(status_code=400, detail="Bad signature")
-    data = IPNBody(**json.loads(raw.decode("utf-8")))
+    data = BaseModel(**json.loads(raw.decode("utf-8")))
     status = (data.payment_status or "").lower()
     credited = float(data.actually_paid or data.pay_amount or 0.0)
     if status in {"finished", "confirmed"} and data.order_id and credited > 0:
@@ -472,27 +468,22 @@ app.add_handler(withdraw_conv)
 app.add_handler(CommandHandler("referral_link", cmd_referral_link))
 
 if __name__ == "__main__":
-    # Validate only critical variables for initial deployment
     missing = []
     for name in ["BOT_TOKEN", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET"]:
         if not globals().get(name):
             missing.append(name)
     if missing:
         raise RuntimeError(f"Missing required config values: {', '.join(missing)}")
-    # Start FastAPI server regardless of BASE_URL
+    # Start FastAPI server in a separate thread
     Thread(target=run_ipn, daemon=True).start()
-    # Set webhook only if BASE_URL is provided
+    # Set webhook asynchronously if BASE_URL is provided
     if BASE_URL:
+        import asyncio
+        loop = asyncio.get_event_loop()
         webhook_url = f"{BASE_URL}/telegram/webhook"
-        app.bot.set_webhook(webhook_url)
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path="/telegram/webhook",
-            webhook_url=webhook_url
-        )
+        loop.run_until_complete(app.bot.set_webhook(webhook_url))
+        print(f"Webhook set to {webhook_url}")
     else:
-        # Run minimal app to keep server alive
         print("BASE_URL not set. Running FastAPI server only. Use /set-webhook to configure Telegram webhook.")
-        while True:
-            time.sleep(60)  # Keep main thread alive
+    # Run FastAPI server in the main thread
+    uvicorn.run(api, host="0.0.0.0", port=PORT, log_level="info", workers=1)
