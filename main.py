@@ -474,16 +474,18 @@ if __name__ == "__main__":
             missing.append(name)
     if missing:
         raise RuntimeError(f"Missing required config values: {', '.join(missing)}")
+    # Initialize Application
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(app.initialize())
     # Start FastAPI server in a separate thread
     Thread(target=run_ipn, daemon=True).start()
-    # Set webhook asynchronously if BASE_URL is provided
+    # Set webhook if BASE_URL is provided
     if BASE_URL:
-        import asyncio
-        loop = asyncio.get_event_loop()
         webhook_url = f"{BASE_URL}/telegram/webhook"
         loop.run_until_complete(app.bot.set_webhook(webhook_url))
         print(f"Webhook set to {webhook_url}")
     else:
         print("BASE_URL not set. Running FastAPI server only. Use /set-webhook to configure Telegram webhook.")
-    # Run FastAPI server in the main thread
+    # Run FastAPI server
     uvicorn.run(api, host="0.0.0.0", port=PORT, log_level="info", workers=1)
