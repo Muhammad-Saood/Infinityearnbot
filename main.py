@@ -8,38 +8,31 @@ from typing import Optional, Dict, Any, List
 import requests
 from threading import Thread
 
-# Telegram
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ConversationHandler, MessageHandler, ContextTypes, filters
-
-# FastAPI (webhook)
 from fastapi import FastAPI, Request, Header, HTTPException
 import uvicorn
 from pydantic import BaseModel
-
-# Firebase
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# ----------------- CONFIG (SECRETS INSERTED) -----------------
+# ----------------- CONFIG -----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
 NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
 CHANNEL_USERNAME = "@InfinityEarn2x"
-BASE_URL = os.getenv("BASE_URL")
+BASE_URL = os.getenv("BASE_URL")  # Can be None initially
 PORT = int(os.getenv("PORT", "8000"))
 
-# 🔹 Load Firebase credentials
-firebase_config = os.getenv("FIREBASE_CONFIG")
-if not firebase_config:
-    raise RuntimeError("❌ FIREBASE_CONFIG not set in environment variables!")
-config_dict = json.loads(firebase_config)
 if not firebase_admin._apps:
+    firebase_config = os.getenv("FIREBASE_CONFIG")
+    if not firebase_config:
+        raise RuntimeError("❌ FIREBASE_CONFIG not set in environment variables!")
+    config_dict = json.loads(firebase_config)
     cred = credentials.Certificate(config_dict)
     firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-# ----------------- NowPayments / Packages -----------------
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
 PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
@@ -50,7 +43,6 @@ COL_DEPOSITS = db.collection("deposits")
 COL_WITHDRAWS = db.collection("withdrawals")
 ASK_WD_ADDR, ASK_WD_AMOUNT = range(2)
 
-# FastAPI app
 api = FastAPI()
 
 # ----------------- FIREBASE UTILITIES -----------------
@@ -134,6 +126,8 @@ def get_min_amount():
         return 5.0
 
 def nowpayments_create_payment(user_id: int) -> Dict[str, Any]:
+    if not BASE_URL:
+        raise ValueError("BASE_URL not set for payment creation")
     url = f"{NOWPAY_API}/payment"
     headers = {"x-api-key": NOWPAY_API_KEY, "Content-Type": "application/json"}
     min_amt = get_min_amount()
@@ -204,12 +198,23 @@ async def telegram_webhook(request: Request):
     await app.process_update(Update.de_json(update, app.bot))
     return {"ok": True}
 
+@api.get("/set-webhook")
+async def set_webhook():
+    if not BASE_URL:
+        raise HTTPException(status_code=400, detail="BASE_URL not set in environment variables")
+    webhook_url = f"{BASE_URL}/telegram/webhook"
+    try:
+        await app.bot.set_webhook(webhook_url)
+        return {"status": "Webhook set successfully", "webhook_url": webhook_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to set webhook: {str(e)}")
+
 def run_ipn():
-    uvicorn.run(api, host="0.0.0.0", port=PORT, log_level="info")
+    uvicorn.run(api, host="0.0.0.0", port=PORT, log_level="info", workers=1)
 
 # ----------------- TELEGRAM BOT HANDLERS -----------------
 WELCOME_TEXT = (
-    'Welcome to "Infinity Earn 2x" platform where you can :\n\n'
+    'Welcome to "Infinity Earn 2x" platform where you can:\n\n'
     '👉 Invest 10 USDT and earn 0.33 USDT daily for 60 days.\n'
     '👉 Invest 20 USDT and earn 0.66 USDT daily for 60 days.\n'
     '👉 Invest 50 USDT and earn 1.66 USDT daily for 60 days.\n'
@@ -218,7 +223,7 @@ WELCOME_TEXT = (
     '👉 Invest 500 USDT and earn 16.66 USDT daily for 60 days.\n'
     '👉 Invest 1000 USDT and earn 33.33 USDT daily for 60 days.\n\n'
     '🎁 You can also get 10% bonus on first deposit of your friend if your friend joined by your referral link.\n\n'
-    'Join our Telegram Channel for latest announcements and verify your account for start your earning now.'
+    'Join our Telegram Channel for latest announcements and verify your account to start your earning now.'
 )
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -255,9 +260,9 @@ async def cb_verify_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     refobj = user_ref(uid)
     refobj.update({"verified": True})
     await q.edit_message_text(
-        "Congratulations !\n"
-        "You have been verified. Deposit your balance , select your package by sending commands from menu and start your earning journey. "
-        "You can also select more than one packages one by one for boost your earning."
+        "Congratulations!\n"
+        "You have been verified. Deposit your balance, select your package by sending commands from the menu, and start your earning journey. "
+        "You can also select multiple packages one by one to boost your earning."
     )
 
 async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -436,7 +441,7 @@ async def finalize_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def cancel_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Withdraw cancelled.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("Withdrawal cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 async def cmd_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -467,18 +472,27 @@ app.add_handler(withdraw_conv)
 app.add_handler(CommandHandler("referral_link", cmd_referral_link))
 
 if __name__ == "__main__":
+    # Validate only critical variables for initial deployment
     missing = []
-    for name in ["BOT_TOKEN", "CHANNEL_USERNAME", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET", "BASE_URL"]:
+    for name in ["BOT_TOKEN", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET"]:
         if not globals().get(name):
             missing.append(name)
     if missing:
         raise RuntimeError(f"Missing required config values: {', '.join(missing)}")
-    webhook_url = f"{BASE_URL}/telegram/webhook"
-    app.bot.set_webhook(webhook_url)
+    # Start FastAPI server regardless of BASE_URL
     Thread(target=run_ipn, daemon=True).start()
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path="/telegram/webhook",
-        webhook_url=webhook_url
-    )
+    # Set webhook only if BASE_URL is provided
+    if BASE_URL:
+        webhook_url = f"{BASE_URL}/telegram/webhook"
+        app.bot.set_webhook(webhook_url)
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path="/telegram/webhook",
+            webhook_url=webhook_url
+        )
+    else:
+        # Run minimal app to keep server alive
+        print("BASE_URL not set. Running FastAPI server only. Use /set-webhook to configure Telegram webhook.")
+        while True:
+            time.sleep(60)  # Keep main thread alive
