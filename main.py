@@ -36,7 +36,7 @@ NOWPAY_IPN_SECRET = "U1niR1kvuIbS1WCi7s3up34hKxH2McrL"
 
 # IMPORTANT: set this to your app's public URL (Koyeb provides it after deploy).
 # Example: BASE_URL = "https://my-app.koyeb.app"
-  # <-- REPLACE with your real public URL before deploy
+BASE_URL = os.getenv("BASE_URL", "")  # <-- REPLACE with your real public URL before deploy
 
 PORT = int(os.getenv("PORT", "8000"))
 
