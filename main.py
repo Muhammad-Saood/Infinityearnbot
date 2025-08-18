@@ -153,11 +153,24 @@ def active_packages(user: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 # ----------------- NOWPAYMENTS -----------------
+def get_min_amount():
+    url = f"{NOWPAY_API}/min-amount"
+    headers = {"x-api-key": NOWPAY_API_KEY}
+    params = {"currency_from": USDT_BSC_CODE, "currency_to": USDT_BSC_CODE}
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return float(data.get('min_amount', 5.0))  # fallback to 5 if fail
+    except Exception:
+        return 5.0  # fallback
+
 def nowpayments_create_payment(user_id: int) -> Dict[str, Any]:
     url = f"{NOWPAY_API}/payment"
     headers = {"x-api-key": NOWPAY_API_KEY, "Content-Type": "application/json"}
+    min_amt = get_min_amount()
     payload = {
-        "price_amount": 1,
+        "price_amount": min_amt,
         "price_currency": USDT_BSC_CODE,
         "pay_currency": USDT_BSC_CODE,
         "order_id": f"{user_id}-{int(time.time())}",
