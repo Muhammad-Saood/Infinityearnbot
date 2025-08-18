@@ -29,29 +29,34 @@ from firebase_admin import credentials, firestore
 
 # ----------------- CONFIG (SECRETS INSERTED) -----------------
 # --- DO NOT SHARE THIS FILE PUBLICLY ---
-BOT_TOKEN = "7749505174:AAHI-_mABEpz0y-Cx_GKpYPj-8IFW2A5n5w"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
+NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
 CHANNEL_USERNAME = "@InfinityEarn2x"
-NOWPAY_API_KEY = "MW7B3BH-82Z4YSK-M270EA7-VVX0JZ1"
-NOWPAY_IPN_SECRET = "U1niR1kvuIbS1WCi7s3up34hKxH2McrL"
 
 # IMPORTANT: set this to your app's public URL (Koyeb provides it after deploy).
 # Example: BASE_URL = "https://my-app.koyeb.app"
-BASE_URL = os.getenv("BASE_URL", "")  # <-- REPLACE with your real public URL before deploy
+BASE_URL = os.getenv("BASE_URL")
+  # <-- REPLACE with your real public URL before deploy
 
 PORT = int(os.getenv("PORT", "8000"))
 
-# Firebase: we expect the service account file to be named firebase.json and present next to this file
-GOOGLE_CREDS_PATH = os.path.join(os.path.dirname(__file__), "firebase.json")
+# 🔹 Load Firebase credentials
+firebase_config = os.getenv("FIREBASE_CONFIG")  # stored as secret in Koyeb
 
-if not os.path.exists(GOOGLE_CREDS_PATH):
-    raise RuntimeError("Firebase credentials file 'firebase.json' not found in project folder. Place it next to main.py.")
+if not firebase_config:
+    raise RuntimeError("❌ FIREBASE_CONFIG not set in environment variables!")
+
+# Parse the JSON string from secrets
+config_dict = json.loads(firebase_config)
 
 # Initialize Firebase
 if not firebase_admin._apps:
-    cred = credentials.Certificate(GOOGLE_CREDS_PATH)
+    cred = credentials.Certificate(config_dict)
     firebase_admin.initialize_app(cred)
-db = firestore.client()
 
+# Firestore client
+db = firestore.client()
 # ----------------- NowPayments / Packages -----------------
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"  # force BSC (BEP20) USDT
@@ -148,11 +153,24 @@ def active_packages(user: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 # ----------------- NOWPAYMENTS -----------------
+def get_min_amount():
+    url = f"{NOWPAY_API}/min-amount"
+    headers = {"x-api-key": NOWPAY_API_KEY}
+    params = {"currency_from": USDT_BSC_CODE, "currency_to": USDT_BSC_CODE}
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return float(data.get('min_amount', 5.0))  # fallback to 5 if fail
+    except Exception:
+        return 5.0  # fallback
+
 def nowpayments_create_payment(user_id: int) -> Dict[str, Any]:
     url = f"{NOWPAY_API}/payment"
     headers = {"x-api-key": NOWPAY_API_KEY, "Content-Type": "application/json"}
+    min_amt = get_min_amount()
     payload = {
-        "price_amount": 1,
+        "price_amount": min_amt,
         "price_currency": USDT_BSC_CODE,
         "pay_currency": USDT_BSC_CODE,
         "order_id": f"{user_id}-{int(time.time())}",
