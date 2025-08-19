@@ -14,6 +14,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from fastapi import FastAPI, Request, Header, HTTPException
 import uvicorn
 from pydantic import BaseModel
+from typing import Union
 from dotenv import load_dotenv  # Optional, for local testing
 
 # Load .env file for local testing (ignored on Koyeb)
@@ -133,8 +134,8 @@ def root():
 # Pydantic model for NowPayments IPN data
 class NowPaymentsIPN(BaseModel):
     payment_status: str
-    actually_paid: str
-    pay_amount: str
+    actually_paid: Union[str, float, int]
+    pay_amount: Union[str, float]
     order_id: str
 
 @api.post("/ipn/nowpayments")
