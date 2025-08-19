@@ -13,8 +13,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Conv
 from fastapi import FastAPI, Request, Header, HTTPException
 import uvicorn
 from pydantic import BaseModel
-import firebase_admin
-from firebase_admin import credentials, firestore
 from dotenv import load_dotenv  # Optional, for local testing
 
 # Load .env file for local testing (ignored on Koyeb)
@@ -28,16 +26,6 @@ CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@InfinityEarn2x")
 BASE_URL = os.getenv("BASE_URL")  # Can be None initially
 PORT = int(os.getenv("PORT", "8000"))
 
-GOOGLE_CREDS_PATH = os.path.join(os.path.dirname(__file__), "firebase.json")
-
-if not os.path.exists(GOOGLE_CREDS_PATH):
-    raise RuntimeError("Firebase credentials file 'firebase.json' not found in project folder. Place it next to main.py.")
-
-# Initialize Firebase
-if not firebase_admin._apps:
-    cred = credentials.Certificate(GOOGLE_CREDS_PATH)
-    firebase_admin.initialize_app(cred)
-db = firestore.client()
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
 PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
@@ -428,8 +416,7 @@ async def finalize_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "user_id": uid,
         "address": context.user_data.get("wd_addr"),
         "amount": float(amount),
-        "status": "pending",
-        "created_at": firestore.SERVER_TIMESTAMP
+        "status": "pending
     })
     await update.message.reply_text("Withdrawal Successful! Your withdrawal will be credited to your wallet within 24 hours.")
     return ConversationHandler.END
