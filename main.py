@@ -76,6 +76,17 @@ def deduct_balance(uid: int, amount: float) -> bool:
         return True
     return False
 
+@bot.message_handler(commands=["my_team"])
+def my_team(message):
+    uid = message.from_user.id
+
+    if uid in users and "referrals" in users[uid]:
+        team_size = len(users[uid]["referrals"])
+    else:
+        team_size = 0
+
+    bot.send_message(uid, f"Your invited friends are {team_size}")
+
 def append_package(uid: int, pack: Dict[str, Any]):
     if uid in users:
         users[uid]["packages"].append(pack)
