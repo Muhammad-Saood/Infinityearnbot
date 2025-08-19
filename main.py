@@ -29,14 +29,19 @@ BASE_URL = os.getenv("BASE_URL")  # Can be None initially
 PORT = int(os.getenv("PORT", "8000"))
 
 if not firebase_admin._apps:
-    firebase_config = os.getenv("FIREBASE_CONFIG")
-    if not firebase_config:
-        raise RuntimeError("❌ FIREBASE_CONFIG not set in environment variables!")
-    config_dict = json.loads(firebase_config)
-    cred = credentials.Certificate(config_dict)
-    firebase_admin.initialize_app(cred)
+    try:
+        # Load Firebase config from file
+        with open("firebase.json", "r") as f:
+            config_dict = json.load(f)
+        cred = credentials.Certificate(config_dict)
+        firebase_admin.initialize_app(cred)
+    except FileNotFoundError:
+        raise RuntimeError("❌ firebase.json not found in project directory")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"❌ Invalid JSON in firebase.json: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"❌ Failed to initialize Firebase: {str(e)}")
 db = firestore.client()
-
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
 PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
