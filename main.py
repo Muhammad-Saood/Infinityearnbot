@@ -28,25 +28,15 @@ CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@InfinityEarn2x")
 BASE_URL = os.getenv("BASE_URL")  # Can be None initially
 PORT = int(os.getenv("PORT", "8000"))
 
+GOOGLE_CREDS_PATH = os.path.join(os.path.dirname(__file__), "firebase.json")
+
+if not os.path.exists(GOOGLE_CREDS_PATH):
+    raise RuntimeError("Firebase credentials file 'firebase.json' not found in project folder. Place it next to main.py.")
+
+# Initialize Firebase
 if not firebase_admin._apps:
-    possible_paths = ["firebase.json", "/run/secrets/firebase.json"]
-    config_dict = None
-    for path in possible_paths:
-        try:
-            with open(path, "r") as f:
-                config_dict = json.load(f)
-            break
-        except FileNotFoundError:
-            continue
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"❌ Invalid JSON in {path}: {str(e)}")
-    if config_dict is None:
-        raise RuntimeError("❌ firebase.json not found in any expected location: " + ", ".join(possible_paths))
-    try:
-        cred = credentials.Certificate(config_dict)
-        firebase_admin.initialize_app(cred)
-    except Exception as e:
-        raise RuntimeError(f"❌ Failed to initialize Firebase with {path}: {str(e)}")
+    cred = credentials.Certificate(GOOGLE_CREDS_PATH)
+    firebase_admin.initialize_app(cred)
 db = firestore.client()
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
