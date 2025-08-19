@@ -31,7 +31,56 @@ USDT_BSC_CODE = "usdtbsc"
 PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
 PACKAGE_DAYS = 60
 
+# In-memory storage for testing
+users: Dict[int, Dict[str, Any]] = {}  # uid: {"balance": 0.0, "verified": False, "referrer_id": None, "packages": [], "first_package_activated": False}
+
 api = FastAPI()
+
+# ----------------- MEMORY UTILITIES -----------------
+def ensure_user(uid: int, referrer_id: Optional[int] = None):
+    if uid in users:
+        data = users[uid]
+        if referrer_id and not data.get("referrer_id"):
+            data["referrer_id"] = referrer_id
+        return
+    users[uid] = {
+        "balance": 0.0,
+        "verified": False,
+        "referrer_id": referrer_id,
+        "packages": [],
+        "first_package_activated": False
+    }
+
+def get_user(uid: int) -> Dict[str, Any]:
+    if uid in users:
+        return users[uid]
+    ensure_user(uid)
+    return users[uid]
+
+def add_balance(uid: int, amount: float):
+    if uid in users:
+        users[uid]["balance"] = round(users[uid]["balance"] + amount, 8)
+
+def deduct_balance(uid: int, amount: float) -> bool:
+    if uid in users:
+        cur = users[uid]["balance"]
+        if cur + 1e-9 < amount:
+            return False
+        users[uid]["balance"] = round(cur - amount, 8)
+        return True
+    return False
+
+def append_package(uid: int, pack: Dict[str, Any]):
+    if uid in users:
+        users[uid]["packages"].append(pack)
+
+def active_packages(user: Dict[str, Any]) -> List[Dict[str, Any]]:
+    now = dt.datetime.utcnow()
+    out = []
+    for p in user.get("packages", []):
+        if dt.datetime.fromtimestamp(p["end_ts"]) > now:
+            out.append(p)
+    return out
 
 # ----------------- NOWPAYMENTS -----------------
 def get_min_amount():
@@ -87,6 +136,7 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
     if status in {"finished", "confirmed"} and data.order_id and credited > 0:
         try:
             tg_id = int(str(data.order_id).split("-")[0])
+            add_balance(tg_id, credited)
             await app.bot.send_message(chat_id=tg_id, text=f"{credited} USDT Deposit Successfully")
         except Exception:
             pass
@@ -112,7 +162,7 @@ async def set_webhook():
 # ----------------- TELEGRAM BOT HANDLERS -----------------
 WELCOME_TEXT = (
     'Welcome to "Infinity Earn 2x" platform where you can:\n\n'
-   
+    '👉 Invest 10 USDT and earn 0.33 USDT daily for 60 days.\n'
     '👉 Invest 20 USDT and earn 0.66 USDT daily for 60 days.\n'
     '👉 Invest 50 USDT and earn 1.66 USDT daily for 60 days.\n'
     '👉 Invest 100 USDT and earn 3.33 USDT daily for 60 days.\n'
@@ -135,6 +185,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 referrer = None
     uid = update.effective_user.id
+    ensure_user(uid, referrer)
     kb = [
         [InlineKeyboardButton("📢 Telegram Channel", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")],
         [InlineKeyboardButton("✅ Verify", callback_data="verify_channel")]
@@ -153,6 +204,7 @@ async def cb_verify_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not joined:
         await q.edit_message_text("Join our channel and verify first.")
         return
+    users[uid]["verified"] = True
     await q.edit_message_text(
         "Congratulations!\n"
         "You have been verified. Deposit your balance, select your package by sending commands from the menu, and start your earning journey. "
@@ -161,12 +213,16 @@ async def cb_verify_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    user = get_user(uid)
+    if not user.get("verified"):
+        await update.message.reply_text("Please join our channel and verify first.")
+        return
     if not BASE_URL or not NOWPAY_API_KEY:
         await update.message.reply_text("Service not configured. Contact admin.")
         return
     try:
         pay = nowpayments_create_payment(uid)
-        pay_address = pay.get("pay_address") or pay.get("wallet_address") or pay.get("payment_url")
+        pay_address = pay.get("pay_address") or pay.get("wallet_address") or pay.get("payment_address")
         if not pay_address:
             inv = pay.get("invoice_url") or pay.get("payment_url") or pay.get("url")
             if inv:
@@ -197,21 +253,81 @@ async def cb_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
+    user = get_user(uid)
+    if not user.get("verified"):
+        await q.edit_message_text("Please join our channel and verify first.")
+        return
     price = int(q.data.split(":")[1])
     if price not in PACKAGES:
         await q.edit_message_text("Invalid package.")
         return
-    await q.edit_message_text(f"Package selected: {price} USDT for {PACKAGE_DAYS} days. (Note: Balance tracking is disabled for testing.)")
+    if user.get("balance", 0.0) + 1e-9 < price:
+        await q.edit_message_text("Insufficient balance for selected package")
+        return
+    if not deduct_balance(uid, float(price)):
+        await q.edit_message_text("Insufficient balance for selected package")
+        return
+    daily = PACKAGES[price]
+    now = dt.datetime.utcnow()
+    end = now + dt.timedelta(days=PACKAGE_DAYS)
+    pack = {
+        "name": f"{price} USDT",
+        "price": float(price),
+        "daily": float(daily),
+        "start_ts": int(now.timestamp()),
+        "end_ts": int(end.timestamp()),
+        "last_claim_date": None
+    }
+    append_package(uid, pack)
+    if not user.get("first_package_activated"):
+        refid = user.get("referrer_id")
+        if refid:
+            bonus = round(price * 0.10, 8)
+            add_balance(refid, bonus)
+        user["first_package_activated"] = True
+    await q.edit_message_text(f"Package activated: {price} USDT for {PACKAGE_DAYS} days.")
 
 async def cmd_daily_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    await update.message.reply_text(f"Daily reward simulation for user {uid}. (Note: Rewards are disabled for testing.)")
+    user = get_user(uid)
+    packs = active_packages(user)
+    if not packs:
+        await update.message.reply_text("No active packages.")
+        return
+    today = dt.datetime.utcnow().date().isoformat()
+    total = 0.0
+    changed = False
+    for p in packs:
+        if p.get("last_claim_date") == today:
+            continue
+        total += float(p["daily"])
+        p["last_claim_date"] = today
+        changed = True
+    if total <= 0:
+        await update.message.reply_text("You already claimed today.")
+        return
+    if changed:
+        add_balance(uid, round(total, 8))
+    await update.message.reply_text(f"Daily reward added: {round(total,8)} USDT")
 
 async def cmd_my_packages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Package tracking is disabled for testing.")
+    uid = update.effective_user.id
+    user = get_user(uid)
+    packs = active_packages(user)
+    names = [p["name"] for p in packs]
+    if not names:
+        await update.message.reply_text("You have no active packages.")
+        return
+    if len(names) == 1:
+        await update.message.reply_text(f"Your package is {names[0]}")
+    else:
+        await update.message.reply_text(f"Your packages are {', '.join(names)}")
 
 async def cmd_my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Balance tracking is disabled for testing.")
+    uid = update.effective_user.id
+    user = get_user(uid)
+    bal = round(user.get("balance", 0.0), 8)
+    await update.message.reply_text(f"Your current balance is {bal} USDT")
 
 async def cmd_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
