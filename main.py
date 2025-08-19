@@ -348,6 +348,12 @@ async def cmd_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = f"https://t.me/{bot_info.username}?start=ref{uid}"
     await update.message.reply_text(link)
 
+# ----------------- NEW: MY TEAM COMMAND -----------------
+async def cmd_my_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    count = sum(1 for u in users.values() if u.get("referrer_id") == uid)
+    await update.message.reply_text(f"Your invited friends are {count}")
+
 # ----------------- SETUP & RUN -----------------
 app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", cmd_start))
@@ -359,6 +365,7 @@ app.add_handler(CommandHandler("daily_reward", cmd_daily_reward))
 app.add_handler(CommandHandler("my_packages", cmd_my_packages))
 app.add_handler(CommandHandler("my_balance", cmd_my_balance))
 app.add_handler(CommandHandler("referral_link", cmd_referral_link))
+app.add_handler(CommandHandler("my_team", cmd_my_team))
 
 async def initialize_app():
     try:
