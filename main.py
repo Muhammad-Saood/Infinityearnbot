@@ -7,6 +7,7 @@ import datetime as dt
 from typing import Optional, Dict, Any, List
 import requests
 import asyncio
+import logging
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -33,6 +34,10 @@ PACKAGE_DAYS = 60
 
 # In-memory storage for testing
 users: Dict[int, Dict[str, Any]] = {}  # uid: {"balance": 0.0, "verified": False, "referrer_id": None, "packages": [], "first_package_activated": False}
+
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 api = FastAPI()
 
@@ -75,10 +80,10 @@ def append_package(uid: int, pack: Dict[str, Any]):
         users[uid]["packages"].append(pack)
 
 def active_packages(user: Dict[str, Any]) -> List[Dict[str, Any]]:
-    now = dt.datetime.utcnow()
+    now = dt.datetime.now(dt.UTC)  # Updated to use timezone-aware UTC
     out = []
     for p in user.get("packages", []):
-        if dt.datetime.fromtimestamp(p["end_ts"]) > now:
+        if dt.datetime.fromtimestamp(p["end_ts"], dt.UTC) > now:
             out.append(p)
     return out
 
@@ -125,12 +130,19 @@ def verify_nowpay_signature(raw_body: bytes, signature: str) -> bool:
 def root():
     return {"ok": True}
 
+# Pydantic model for NowPayments IPN data
+class NowPaymentsIPN(BaseModel):
+    payment_status: str
+    actually_paid: str
+    pay_amount: str
+    order_id: str
+
 @api.post("/ipn/nowpayments")
 async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None)):
     raw = await request.body()
     if not x_nowpayments_sig or not verify_nowpay_signature(raw, x_nowpayments_sig):
         raise HTTPException(status_code=400, detail="Bad signature")
-    data = BaseModel(**json.loads(raw.decode("utf-8")))
+    data = NowPaymentsIPN(**json.loads(raw.decode("utf-8")))
     status = (data.payment_status or "").lower()
     credited = float(data.actually_paid or data.pay_amount or 0.0)
     if status in {"finished", "confirmed"} and data.order_id and credited > 0:
@@ -138,8 +150,8 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
             tg_id = int(str(data.order_id).split("-")[0])
             add_balance(tg_id, credited)
             await app.bot.send_message(chat_id=tg_id, text=f"{credited} USDT Deposit Successfully")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error processing payment for order_id {data.order_id}: {e}")
     return {"ok": True}
 
 @api.post("/telegram/webhook")
@@ -268,7 +280,7 @@ async def cb_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Insufficient balance for selected package")
         return
     daily = PACKAGES[price]
-    now = dt.datetime.utcnow()
+    now = dt.datetime.now(dt.UTC)  # Updated to use timezone-aware UTC
     end = now + dt.timedelta(days=PACKAGE_DAYS)
     pack = {
         "name": f"{price} USDT",
@@ -294,7 +306,7 @@ async def cmd_daily_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not packs:
         await update.message.reply_text("No active packages.")
         return
-    today = dt.datetime.utcnow().date().isoformat()
+    today = dt.datetime.now(dt.UTC).date().isoformat()  # Updated to use timezone-aware UTC
     total = 0.0
     changed = False
     for p in packs:
@@ -348,13 +360,17 @@ app.add_handler(CommandHandler("my_balance", cmd_my_balance))
 app.add_handler(CommandHandler("referral_link", cmd_referral_link))
 
 async def initialize_app():
-    await app.initialize()
-    if BASE_URL:
-        webhook_url = f"{BASE_URL}/telegram/webhook"
-        await app.bot.set_webhook(webhook_url)
-        print(f"Webhook set to {webhook_url}")
-    else:
-        print("BASE_URL not set. Running FastAPI server only. Use /set-webhook to configure Telegram webhook.")
+    try:
+        await app.initialize()
+        if BASE_URL:
+            webhook_url = f"{BASE_URL}/telegram/webhook"
+            await app.bot.set_webhook(webhook_url)
+            logger.info(f"Webhook set to {webhook_url}")
+        else:
+            logger.warning("BASE_URL not set. Running FastAPI server only. Use /set-webhook to configure Telegram webhook.")
+    except Exception as e:
+        logger.error(f"Error initializing app: {e}")
+        raise
 
 if __name__ == "__main__":
     missing = []
@@ -363,7 +379,9 @@ if __name__ == "__main__":
             missing.append(name)
     if missing:
         raise RuntimeError(f"Missing required config values: {', '.join(missing)}")
-    # Initialize Application and set webhook
-    asyncio.run(initialize_app())
-    # Run FastAPI server
-    uvicorn.run(api, host="0.0.0.0", port=PORT, log_level="info", workers=1)
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(initialize_app())
+        uvicorn.run(api, host="0.0.0.0", port=PORT, log_level="info", workers=1)
+    finally:
+        loop.close()
