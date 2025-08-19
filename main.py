@@ -112,7 +112,7 @@ async def set_webhook():
 # ----------------- TELEGRAM BOT HANDLERS -----------------
 WELCOME_TEXT = (
     'Welcome to "Infinity Earn 2x" platform where you can:\n\n'
-    '👉 Invest 10 USDT and earn 0.33 USDT daily for 60 days.\n'
+   
     '👉 Invest 20 USDT and earn 0.66 USDT daily for 60 days.\n'
     '👉 Invest 50 USDT and earn 1.66 USDT daily for 60 days.\n'
     '👉 Invest 100 USDT and earn 3.33 USDT daily for 60 days.\n'
