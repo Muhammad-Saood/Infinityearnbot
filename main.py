@@ -10,7 +10,7 @@ import asyncio
 import logging
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, Filters
 from fastapi import FastAPI, Request, Header, HTTPException
 import uvicorn
 from pydantic import BaseModel
@@ -27,14 +27,16 @@ NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@InfinityEarn2x")
 BASE_URL = os.getenv("BASE_URL")  # Can be None initially
 PORT = int(os.getenv("PORT", "8000"))
+ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID", "-1003095776330")  # New: ID of the private channel for admin notifications
 
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
 PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
 PACKAGE_DAYS = 60
+MIN_WITHDRAWAL = 3.0  # Minimum withdrawal amount
 
 # In-memory storage for testing
-users: Dict[int, Dict[str, Any]] = {}  # uid: {"balance": 0.0, "verified": False, "referrer_id": None, "packages": [], "first_package_activated": False}
+users: Dict[int, Dict[str, Any]] = {}  # uid: {"balance": 0.0, "verified": False, "referrer_id": None, "packages": [], "first_package_activated": False, "withdraw_state": None}
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -54,7 +56,8 @@ def ensure_user(uid: int, referrer_id: Optional[int] = None):
         "verified": False,
         "referrer_id": referrer_id,
         "packages": [],
-        "first_package_activated": False
+        "first_package_activated": False,
+        "withdraw_state": None  # New field for withdrawal state: None, "address", or "amount"
     }
 
 def get_user(uid: int) -> Dict[str, Any]:
@@ -159,7 +162,7 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
 async def telegram_webhook(request: Request):
     update = await request.json()
     await app.process_update(Update.de_json(update, app.bot))
-    return {"ok": True}
+    return {"ok": True"}
 
 @api.get("/set-webhook")
 async def set_webhook():
@@ -354,6 +357,57 @@ async def cmd_my_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     count = sum(1 for u in users.values() if u.get("referrer_id") == uid)
     await update.message.reply_text(f"Your invited friends are {count}")
 
+# ----------------- NEW: WITHDRAWAL SYSTEM -----------------
+async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user = get_user(uid)
+    if not user.get("verified"):
+        await update.message.reply_text("Please join our channel and verify first.")
+        return
+    user["withdraw_state"] = "address"
+    await update.message.reply_text("Enter your USDT withdrawal address on BSC (Binance Smart Chain).")
+
+async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user = get_user(uid)
+    message_text = update.message.text.strip()
+
+    if user.get("withdraw_state") == "address":
+        user["withdraw_state"] = "amount"
+        user["withdraw_address"] = message_text  # Store the address
+        await update.message.reply_text("Enter your withdrawal amount.")
+    elif user.get("withdraw_state") == "amount":
+        try:
+            amount = float(message_text)
+            if amount < MIN_WITHDRAWAL:
+                await update.message.reply_text(f"Insufficient withdrawal amount. Minimum is {MIN_WITHDRAWAL} USDT.")
+                user["withdraw_state"] = None
+                user["withdraw_address"] = None
+                return
+            if not deduct_balance(uid, amount):
+                await update.message.reply_text("Insufficient balance for withdrawal.")
+                user["withdraw_state"] = None
+                user["withdraw_address"] = None
+                return
+            # Notify admin channel
+            if ADMIN_CHANNEL_ID:
+                message = f"New Withdrawal Request:\nUser ID: {uid}\nAddress: {user['withdraw_address']}\nAmount: {amount} USDT"
+                try:
+                    await app.bot.send_message(chat_id=ADMIN_CHANNEL_ID, text=message)
+                except Exception as e:
+                    logger.error(f"Failed to send notification to admin channel: {e}")
+                    add_balance(uid, amount)  # Refund if notification fails
+                    await update.message.reply_text("Withdrawal request failed. Contact admin.")
+                    user["withdraw_state"] = None
+                    user["withdraw_address"] = None
+                    return
+            await update.message.reply_text("Withdraw Successful! Your balance credited to your Binance account within 24 hours.")
+            user["withdraw_state"] = None
+            user["withdraw_address"] = None
+        except ValueError:
+            await update.message.reply_text("Invalid amount. Please enter a valid number.")
+            user["withdraw_state"] = "amount"
+
 # ----------------- SETUP & RUN -----------------
 app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", cmd_start))
@@ -366,6 +420,8 @@ app.add_handler(CommandHandler("my_packages", cmd_my_packages))
 app.add_handler(CommandHandler("my_balance", cmd_my_balance))
 app.add_handler(CommandHandler("referral_link", cmd_referral_link))
 app.add_handler(CommandHandler("my_team", cmd_my_team))
+app.add_handler(CommandHandler("withdraw", cmd_withdraw))
+app.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_withdraw_input))
 
 async def initialize_app():
     try:
@@ -382,7 +438,7 @@ async def initialize_app():
 
 if __name__ == "__main__":
     missing = []
-    for name in ["BOT_TOKEN", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET"]:
+    for name in ["BOT_TOKEN", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET", "ADMIN_CHANNEL_ID"]:
         if not globals().get(name):
             missing.append(name)
     if missing:
