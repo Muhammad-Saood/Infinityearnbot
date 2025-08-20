@@ -409,6 +409,9 @@ async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TY
             user["withdraw_state"] = "amount"
 
 # ----------------- SETUP & RUN -----------------
+def is_text_message(update: Update) -> bool:
+    return update.message and update.message.text and not update.message.text.startswith('/')
+
 app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", cmd_start))
 app.add_handler(CallbackQueryHandler(cb_verify_channel, pattern="^verify_channel$"))
@@ -421,7 +424,7 @@ app.add_handler(CommandHandler("my_balance", cmd_my_balance))
 app.add_handler(CommandHandler("referral_link", cmd_referral_link))
 app.add_handler(CommandHandler("my_team", cmd_my_team))
 app.add_handler(CommandHandler("withdraw", cmd_withdraw))
-app.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_withdraw_input))
+app.add_handler(MessageHandler(is_text_message, handle_withdraw_input))
 
 async def initialize_app():
     try:
