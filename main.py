@@ -438,7 +438,7 @@ async def initialize_app():
 
 if __name__ == "__main__":
     missing = []
-    for name in ["BOT_TOKEN", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET", "ADMIN_CHANNEL_ID"]:
+    for name in ["BOT_TOKEN", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET"]:
         if not globals().get(name):
             missing.append(name)
     if missing:
