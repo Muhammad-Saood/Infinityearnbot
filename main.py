@@ -10,7 +10,7 @@ import asyncio
 import logging
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filter
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler
 from fastapi import FastAPI, Request, Header, HTTPException
 import uvicorn
 from pydantic import BaseModel
