@@ -34,7 +34,7 @@ NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
 PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
 PACKAGE_DAYS = 60
-MIN_WITHDRAWAL = 0.0  # Minimum withdrawal amount
+MIN_WITHDRAWAL = 1.5  # Minimum withdrawal amount
 
 # In-memory storage for testing
 users: Dict[int, Dict[str, Any]] = {}  # uid: {"balance": 0.0, "verified": False, "referrer_id": None, "packages": [], "first_package_activated": False, "withdraw_state": None}
@@ -330,7 +330,7 @@ async def cmd_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_my_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     count = sum(1 for u in users.values() if u.get("referrer_id") == uid and u.get("first_package_activated", False))
-    await update.message.reply_text(f"Your qualified friends (with first package activated) are {count}")
+    await update.message.reply_text(f"Your qualified friends are {count}")
 
 # ----------------- NEW: WITHDRAWAL SYSTEM -----------------
 async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
