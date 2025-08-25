@@ -187,10 +187,11 @@ WELCOME_TEXT = (
     '👉 Invest 500 USDT and earn 16.66 USDT daily for 60 days.\n'
     '👉 Invest 1000 USDT and earn 33.33 USDT daily for 60 days.\n\n'
     '🎁 You can also get 10% bonus on first deposit of your friend if your friend joined by your referral link.\n\n'
-    'Join our Telegram Channel for latest announcements and verify your account to start your earning now.'
+    'Deposit your balance, select your package by sending commands from the menu, and start your earning journey. You can also select multiple packages one by one to boost your earning.'
 )
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
     referrer = None
     if context.args:
         arg = context.args[0]
@@ -201,39 +202,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     referrer = None
             except Exception:
                 referrer = None
-    uid = update.effective_user.id
     ensure_user(uid, referrer)
     kb = [
-        [InlineKeyboardButton("📢 Telegram Channel", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")],
-        [InlineKeyboardButton("✅ Verify", callback_data="verify_channel")]
+        [InlineKeyboardButton("📢 Telegram Channel", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")]
     ]
     await update.message.reply_text(WELCOME_TEXT, reply_markup=InlineKeyboardMarkup(kb))
-
-async def cb_verify_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-    try:
-        member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=uid)
-        joined = member.status in ("member", "administrator", "creator")
-    except Exception:
-        joined = False
-    if not joined:
-        await q.edit_message_text("Join our channel and verify first.")
-        return
-    users[uid]["verified"] = True
-    await q.edit_message_text(
-        "Congratulations!\n"
-        "You have been verified. Deposit your balance, select your package by sending commands from the menu, and start your earning journey. "
-        "You can also select multiple packages one by one to boost your earning."
-    )
 
 async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = get_user(uid)
-    if not user.get("verified"):
-        await update.message.reply_text("Please join our channel and verify first.")
-        return
     if not BASE_URL or not NOWPAY_API_KEY:
         await update.message.reply_text("Service not configured. Contact admin.")
         return
@@ -271,9 +248,6 @@ async def cb_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     uid = q.from_user.id
     user = get_user(uid)
-    if not user.get("verified"):
-        await q.edit_message_text("Please join our channel and verify first.")
-        return
     price = int(q.data.split(":")[1])
     if price not in PACKAGES:
         await q.edit_message_text("Invalid package.")
@@ -355,16 +329,13 @@ async def cmd_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----------------- NEW: MY TEAM COMMAND -----------------
 async def cmd_my_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    count = sum(1 for u in users.values() if u.get("referrer_id") == uid)
-    await update.message.reply_text(f"Your invited friends are {count}")
+    count = sum(1 for u in users.values() if u.get("referrer_id") == uid and u.get("first_package_activated", False))
+    await update.message.reply_text(f"Your qualified friends (with first package activated) are {count}")
 
 # ----------------- NEW: WITHDRAWAL SYSTEM -----------------
 async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = get_user(uid)
-    if not user.get("verified"):
-        await update.message.reply_text("Please join our channel and verify first.")
-        return
     user["withdraw_state"] = "address"
     await update.message.reply_text("Enter your Binance ID")
 
@@ -390,9 +361,11 @@ async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TY
                 user["withdraw_state"] = None
                 user["withdraw_address"] = None
                 return
+            # Calculate qualified friends
+            qualified_friends = sum(1 for u in users.values() if u.get("referrer_id") == uid and u.get("first_package_activated", False))
             # Notify admin channel
             if ADMIN_CHANNEL_ID:
-                message = f"New Withdrawal Request:\nUser ID: {uid}\nAddress: {user['withdraw_address']}\nAmount: {amount} USDT"
+                message = f"New Withdrawal Request:\nUser ID: {uid}\nAddress: {user['withdraw_address']}\nAmount: {amount} USDT\nQualified Friends: {qualified_friends}"
                 try:
                     await app.bot.send_message(chat_id=ADMIN_CHANNEL_ID, text=message)
                 except Exception as e:
@@ -412,7 +385,6 @@ async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TY
 # ----------------- SETUP & RUN -----------------
 app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", cmd_start))
-app.add_handler(CallbackQueryHandler(cb_verify_channel, pattern="^verify_channel$"))
 app.add_handler(CommandHandler("deposit", cmd_deposit))
 app.add_handler(CommandHandler("packages", cmd_packages))
 app.add_handler(CallbackQueryHandler(cb_package, pattern=r"^pkg:\d+$"))
