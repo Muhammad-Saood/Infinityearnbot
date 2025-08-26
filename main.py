@@ -211,6 +211,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = get_user(uid)
+    if not is_user_in_channel(app.bot, CHANNEL_USERNAME, uid):
+        await update.message.reply_text("Please join our Telegram Channel to access deposits.")
+        return
     if not BASE_URL or not NOWPAY_API_KEY:
         await update.message.reply_text("Service not configured. Contact admin.")
         return
@@ -220,26 +223,13 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not pay_address:
             inv = pay.get("invoice_url") or pay.get("payment_url") or pay.get("url")
             if inv:
-                await update.message.reply_text(
-                    f"Your receiving address of USDT on BSC (Binance Smart Chain) is:\n{inv}\n\n"
-                    "Click 'Copy' below to copy the address, then paste it to send your payment. (Open and pay on BSC/USDT)",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Copy", callback_data=f"copy:{inv}")]])
-                )
+                await update.message.reply_text(f"Your receiving address of USDT on BSC (Binance Smart Chain) is:\n{inv}\n\n(Open and pay on BSC/USDT)")
                 return
             await update.message.reply_text("Could not get deposit address. Try again later.")
             return
-        await update.message.reply_text(
-            f"Your receiving address of USDT on BSC (Binance Smart Chain) is:\n{pay_address}\n\n"
-            "Click 'Copy' below to copy the address, then paste it to send your payment.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Copy", callback_data=f"copy:{pay_address}")]])
-        )
+        await update.message.reply_text(f"Your receiving address of USDT on BSC (Binance Smart Chain) is\n{pay_address}")
     except Exception as e:
         await update.message.reply_text(f"Error creating deposit address: {e}")
-
-async def cb_copy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer("Address copied to clipboard! (Paste it to send your payment)", show_alert=True)
-    # Note: Clipboard copy isn't directly supported in all Telegram clients, so this is a notification only.
     
 def packages_keyboard():
     rows = [
