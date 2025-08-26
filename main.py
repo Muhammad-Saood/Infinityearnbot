@@ -211,9 +211,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = get_user(uid)
-    if not is_user_in_channel(app.bot, CHANNEL_USERNAME, uid):
-        await update.message.reply_text("Please join our Telegram Channel to access deposits.")
-        return
     if not BASE_URL or not NOWPAY_API_KEY:
         await update.message.reply_text("Service not configured. Contact admin.")
         return
