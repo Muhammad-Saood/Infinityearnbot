@@ -220,29 +220,26 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not pay_address:
             inv = pay.get("invoice_url") or pay.get("payment_url") or pay.get("url")
             if inv:
-                html_content = (
-                    f'<a href="{inv}">Your receiving address of USDT on BSC (Binance Smart Chain) is</a>'
-                    f'<button onclick="navigator.clipboard.writeText(\'{inv}\');alert(\'Copied to clipboard!\');">📋 Copy</button>'
-                    '<script>document.querySelector("button").style.padding = "5px 10px";document.querySelector("button").style.backgroundColor = "#4CAF50";document.querySelector("button").style.color = "white";document.querySelector("button").style.border = "none";document.querySelector("button").style.cursor = "pointer";</script>'
-                )
-                await update.message.reply_html(
-                    f"{html_content}\n\n(Open and pay on BSC/USDT)",
+                await update.message.reply_text(
+                    f"Your receiving address of USDT on BSC (Binance Smart Chain) is:\n{inv}\n\n"
+                    "Click 'Copy' below to copy the address, then paste it to send your payment. (Open and pay on BSC/USDT)",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Copy", callback_data=f"copy:{inv}")]])
                 )
                 return
             await update.message.reply_text("Could not get deposit address. Try again later.")
             return
-        html_content = (
-            f'Your receiving address of USDT on BSC (Binance Smart Chain) is <a href="https://bscscan.com/address/{pay_address}">{pay_address}</a>'
-            f'<button onclick="navigator.clipboard.writeText(\'{pay_address}\');alert(\'Copied to clipboard!\');">📋 Copy</button>'
-            '<script>document.querySelector("button").style.padding = "5px 10px";document.querySelector("button").style.backgroundColor = "#4CAF50";document.querySelector("button").style.color = "white";document.querySelector("button").style.border = "none";document.querySelector("button").style.cursor = "pointer";</script>'
-        )
-        await update.message.reply_html(
-            html_content,
+        await update.message.reply_text(
+            f"Your receiving address of USDT on BSC (Binance Smart Chain) is:\n{pay_address}\n\n"
+            "Click 'Copy' below to copy the address, then paste it to send your payment.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Copy", callback_data=f"copy:{pay_address}")]])
         )
     except Exception as e:
         await update.message.reply_text(f"Error creating deposit address: {e}")
+
+async def cb_copy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer("Address copied to clipboard! (Paste it to send your payment)", show_alert=True)
+    # Note: Clipboard copy isn't directly supported in all Telegram clients, so this is a notification only.
     
 def packages_keyboard():
     rows = [
