@@ -293,7 +293,7 @@ async def cb_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bonus = round(price * 0.10, 8)
             add_balance(refid, bonus)
         user["first_package_activated"] = True
-    await q.edit_message_text(f"Package activated: {price} USDT for {PACKAGE_DAYS} days.")
+    await q.edit_message_text(f"Your {price} USDT package has been activated for {PACKAGE_DAYS} days.")
 
 async def cmd_daily_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
