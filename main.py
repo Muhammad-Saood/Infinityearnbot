@@ -241,6 +241,7 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await update.message.reply_text("Could not get deposit address. Try again later.")
             return
+         await update.message.reply_text(f"Your receiving address of USDT on BSC (Binance Smart Chain) is given below 👇:")   
         await update.message.reply_text(f" {pay_address}")
     except Exception as e:
         await update.message.reply_text(f"Error creating deposit address: {e}")
