@@ -237,7 +237,7 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not pay_address:
             inv = pay.get("invoice_url") or pay.get("payment_url") or pay.get("url")
             if inv:
-                await update.message.reply_text(f"Your receiving address of USDT on BSC (Binance Smart Chain) is:\n{inv}\n\n(Open and pay on BSC/USDT)")
+                await update.message.reply_text(f"{inv}\n\n(Open and pay on BSC/USDT)")
                 return
             await update.message.reply_text("Could not get deposit address. Try again later.")
             return
