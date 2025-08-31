@@ -36,10 +36,13 @@ PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000
 PACKAGE_DAYS = 60
 MIN_WITHDRAWAL = 1.5  # Minimum withdrawal amount
 
-# In-memory storage for testing
-users: Dict[int, Dict[str, Any]] = {}  # uid: {"balance": 0.0, "verified": False, "referrer_id": None, "packages": [], "first_package_activated": False, "withdraw_state": None}
+# Persistent storage for users and processed orders
+try:
+    with open("users.json", "r") as f:
+        users: Dict[int, Dict[str, Any]] = {int(k): v for k, v in json.load(f).items()}
+except (FileNotFoundError, json.JSONDecodeError, ValueError):
+    users: Dict[int, Dict[str, Any]] = {}  # uid: {"balance": 0.0, "verified": False, "referrer_id": None, "packages": [], "first_package_activated": False, "withdraw_state": None}
 
-# Persistent storage for processed orders
 try:
     with open("processed_orders.json", "r") as f:
         processed_orders = set(json.load(f))
@@ -53,30 +56,33 @@ logger = logging.getLogger(__name__)
 api = FastAPI()
 
 # ----------------- MEMORY UTILITIES -----------------
+def save_users():
+    with open("users.json", "w") as f:
+        json.dump(users, f)
+
 def ensure_user(uid: int, referrer_id: Optional[int] = None):
-    if uid in users:
-        data = users[uid]
-        if referrer_id and not data.get("referrer_id"):
-            data["referrer_id"] = referrer_id
-        return
-    users[uid] = {
-        "balance": 0.0,
-        "verified": False,
-        "referrer_id": referrer_id,
-        "packages": [],
-        "first_package_activated": False,
-        "withdraw_state": None  # New field for withdrawal state: None, "address", or "amount"
-    }
+    if uid not in users:
+        users[uid] = {
+            "balance": 0.0,
+            "verified": False,
+            "referrer_id": referrer_id,
+            "packages": [],
+            "first_package_activated": False,
+            "withdraw_state": None  # New field for withdrawal state: None, "address", or "amount"
+        }
+        save_users()
+    elif referrer_id and not users[uid].get("referrer_id"):
+        users[uid]["referrer_id"] = referrer_id
+        save_users()
 
 def get_user(uid: int) -> Dict[str, Any]:
-    if uid in users:
-        return users[uid]
     ensure_user(uid)
     return users[uid]
 
 def add_balance(uid: int, amount: float):
     if uid in users:
         users[uid]["balance"] = round(users[uid]["balance"] + amount, 8)
+        save_users()
 
 def deduct_balance(uid: int, amount: float) -> bool:
     if uid in users:
@@ -84,12 +90,14 @@ def deduct_balance(uid: int, amount: float) -> bool:
         if cur + 1e-9 < amount:
             return False
         users[uid]["balance"] = round(cur - amount, 8)
+        save_users()
         return True
     return False
 
 def append_package(uid: int, pack: Dict[str, Any]):
     if uid in users:
         users[uid]["packages"].append(pack)
+        save_users()
 
 def active_packages(user: Dict[str, Any]) -> List[Dict[str, Any]]:
     now = dt.datetime.now(dt.UTC)
@@ -241,7 +249,7 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await update.message.reply_text("Could not get deposit address. Try again later.")
             return
-        await update.message.reply_text(f"Your receiving address of USDT on BSC (Binance Smart Chain) is given below 👇:")   
+        await update.message.reply_text(f"Your receiving address of USDT on BSC (Binance Smart Chain) is given below 👇:")
         await update.message.reply_text(f" {pay_address}")
     except Exception as e:
         await update.message.reply_text(f"Error creating deposit address: {e}")
