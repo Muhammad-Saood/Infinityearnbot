@@ -30,7 +30,6 @@ CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@InfinityEarn2x")
 PORT = int(os.getenv("PORT", "8080"))
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID", "-1003095776330")
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "infinity-earn-bot-storage-470810")
-
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
 PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
