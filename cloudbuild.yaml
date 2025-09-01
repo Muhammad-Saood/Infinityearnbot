@@ -2,7 +2,6 @@ steps:
   - name: 'gcr.io/buildpacks/builder:v1'
     args:
       - 'build'
-      - '--builder=gcr.io/buildpacks/builder:v1'
       - '--path=/workspace'
       - '--output=gcr.io/$PROJECT_ID/my-bot'
       - '--env=PORT=8080'
