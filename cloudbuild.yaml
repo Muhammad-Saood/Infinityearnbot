@@ -1,11 +1,9 @@
 steps:
   - name: 'gcr.io/buildpacks/builder:v1'
     args:
-      - 'pack'
       - 'build'
-      - 'gcr.io/$PROJECT_ID/infinity-earn-bot'
-      - '--builder=gcr.io/buildpacks/builder:v1'
-      - '--path=.'
+      - '--path=/workspace'
+      - '--output-image=gcr.io/$PROJECT_ID/infinity-earn-bot'
       - '--env=PORT=8080'
   - name: 'gcr.io/cloud-builders/gcloud'
     args:
