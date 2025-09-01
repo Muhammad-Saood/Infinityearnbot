@@ -1,7 +1,6 @@
 steps:
   - name: 'gcr.io/buildpacks/builder:v1'
     args:
-      - 'build'
       - '--path=/workspace'
       - '--output=gcr.io/$PROJECT_ID/my-bot'
       - '--env=PORT=8080'
@@ -12,7 +11,7 @@ steps:
       - 'my-bot'
       - '--image=gcr.io/$PROJECT_ID/my-bot'
       - '--platform=managed'
-      - '--region=global'
+      - '--region=us-central1'
       - '--allow-unauthenticated'
       - '--service-account=180728958840-compute@developer.gserviceaccount.com'
       - '--set-env-vars=BOT_TOKEN=7749505174:AAHI-_mABEpz0y-Cx_GKpYPj-8IFW2A5n5w,NOWPAY_API_KEY=MW7B3BH-82Z4YSK-M270EA7-VVX0JZ1,NOWPAY_IPN_SECRET=U1niR1kvuIbS1WCi7s3up34hKxH2McrL,CHANNEL_USERNAME=@InfinityEarn2x,ADMIN_CHANNEL_ID=-1003095776330,GCS_BUCKET_NAME=infinity-earn-bot-storage-470810,BASE_URL=https://my-bot-abc123-uc.a.run.app'
