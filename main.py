@@ -17,7 +17,7 @@ import uvicorn
 from pydantic import BaseModel
 from typing import Union
 from dotenv import load_dotenv
-from google.cloud import storage  # Added for GCS persistence
+from google.cloud import storage
 
 # Load .env file for local testing (ignored on Cloud Run)
 load_dotenv()
@@ -27,10 +27,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
 NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@InfinityEarn2x")
-BASE_URL = os.getenv("BASE_URL")  # Set to Cloud Run service URL after deployment
-PORT = int(os.getenv("PORT", "8080"))  # Cloud Run default port
+BASE_URL = os.getenv("BASE_URL")
+PORT = int(os.getenv("PORT", "8080"))
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID", "-1003095776330")
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")  # Required: Name of GCS bucket
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
@@ -63,7 +63,9 @@ def load_from_gcs(file_name: str, default: Any):
 def save_to_gcs(file_name: str, data: Any):
     blob = bucket.blob(file_name)
     if file_name == "users.json":
-        blob.uploadಸ
+        blob.upload_from_string(json.dumps(data), content_type="application/json")
+    elif file_name == "processed_orders.json":
+        blob.upload_from_string(json.dumps(list(data)), content_type="application/json")
 
 # Persistent storage for users and processed orders
 users: Dict[int, Dict[str, Any]] = load_from_gcs("users.json", {})
