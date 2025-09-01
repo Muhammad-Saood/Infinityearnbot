@@ -23,14 +23,13 @@ from google.cloud import storage
 load_dotenv()
 
 # ----------------- CONFIG -----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
-NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7749505174:AAHI-_mABEpz0y-Cx_GKpYPj-8IFW2A5n5w")
+NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY", "MW7B3BH-82Z4YSK-M270EA7-VVX0JZ1")
+NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET", "U1niR1kvuIbS1WCi7s3up34hKxH2McrL")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@InfinityEarn2x")
-BASE_URL = os.getenv("BASE_URL")
 PORT = int(os.getenv("PORT", "8080"))
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID", "-1003095776330")
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "infinity-earn-bot-storage-470810")
 
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
