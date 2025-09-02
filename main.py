@@ -17,57 +17,37 @@ import uvicorn
 from pydantic import BaseModel
 from typing import Union
 from dotenv import load_dotenv
-from google.cloud import storage
 
-# Load .env file for local testing (ignored on Cloud Run)
+# Load .env file for local testing (ignored on Koyeb)
 load_dotenv()
 
 # ----------------- CONFIG -----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7749505174:AAHI-_mABEpz0y-Cx_GKpYPj-8IFW2A5n5w")
-NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY", "MW7B3BH-82Z4YSK-M270EA7-VVX0JZ1")
-NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET", "U1niR1kvuIbS1WCi7s3up34hKxH2McrL")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
+NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@InfinityEarn2x")
-PORT = int(os.getenv("PORT", "8080"))
-ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID", "-1003095776330")
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "infinity-earn-bot-storage-470810")
+BASE_URL = os.getenv("BASE_URL")  # Can be None initially
+PORT = int(os.getenv("PORT", "8000"))
+ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID", "-1003095776330")  # ID of the private channel for admin notifications
+
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
 PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
 PACKAGE_DAYS = 60
-MIN_WITHDRAWAL = 1.5
-
-# Initialize Google Cloud Storage client
-try:
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(GCS_BUCKET_NAME)
-except Exception as e:
-    logging.error(f"Failed to initialize GCS client: {e}")
-    raise
-
-# Persistent storage for users and processed orders using GCS
-def load_from_gcs(file_name: str, default: Any):
-    blob = bucket.blob(file_name)
-    if blob.exists():
-        try:
-            data = json.loads(blob.download_as_text())
-            if file_name == "users.json":
-                return {int(k): v for k, v in data.items()}
-            elif file_name == "processed_orders.json":
-                return set(data)
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return default
-
-def save_to_gcs(file_name: str, data: Any):
-    blob = bucket.blob(file_name)
-    if file_name == "users.json":
-        blob.upload_from_string(json.dumps(data), content_type="application/json")
-    elif file_name == "processed_orders.json":
-        blob.upload_from_string(json.dumps(list(data)), content_type="application/json")
+MIN_WITHDRAWAL = 1.5  # Minimum withdrawal amount
 
 # Persistent storage for users and processed orders
-users: Dict[int, Dict[str, Any]] = load_from_gcs("users.json", {})
-processed_orders = load_from_gcs("processed_orders.json", set())
+try:
+    with open("users.json", "r") as f:
+        users: Dict[int, Dict[str, Any]] = {int(k): v for k, v in json.load(f).items()}
+except (FileNotFoundError, json.JSONDecodeError, ValueError):
+    users: Dict[int, Dict[str, Any]] = {}  # uid: {"balance": 0.0, "verified": False, "referrer_id": None, "packages": [], "first_package_activated": False, "withdraw_state": None}
+
+try:
+    with open("processed_orders.json", "r") as f:
+        processed_orders = set(json.load(f))
+except (FileNotFoundError, json.JSONDecodeError):
+    processed_orders = set()  # Default to empty set if file doesn’t exist or is invalid
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -77,7 +57,8 @@ api = FastAPI()
 
 # ----------------- MEMORY UTILITIES -----------------
 def save_users():
-    save_to_gcs("users.json", users)
+    with open("users.json", "w") as f:
+        json.dump(users, f)
 
 def ensure_user(uid: int, referrer_id: Optional[int] = None):
     if uid not in users:
@@ -87,7 +68,7 @@ def ensure_user(uid: int, referrer_id: Optional[int] = None):
             "referrer_id": referrer_id,
             "packages": [],
             "first_package_activated": False,
-            "withdraw_state": None
+            "withdraw_state": None  # New field for withdrawal state: None, "address", or "amount"
         }
         save_users()
     elif referrer_id and not users[uid].get("referrer_id"):
@@ -170,6 +151,7 @@ def verify_nowpay_signature(raw_body: bytes, signature: str) -> bool:
 def root():
     return {"ok": True}
 
+# Pydantic model for NowPayments IPN data
 class NowPaymentsIPN(BaseModel):
     payment_status: str
     actually_paid: Union[str, float, int]
@@ -193,7 +175,8 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
                 add_balance(tg_id, credited)
                 await app.bot.send_message(chat_id=tg_id, text=f"{credited} USDT Deposit Successfully")
                 processed_orders.add(order_id)
-                save_to_gcs("processed_orders.json", processed_orders)
+                with open("processed_orders.json", "w") as f:
+                    json.dump(list(processed_orders), f)
                 logger.info(f"Processed payment for order_id {order_id}, credited {credited} to user {tg_id}")
             except Exception as e:
                 logger.error(f"Error processing payment for order_id {order_id}: {e}")
@@ -369,11 +352,13 @@ async def cmd_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = f"https://t.me/{bot_info.username}?start=ref{uid}"
     await update.message.reply_text(link)
 
+# ----------------- NEW: MY TEAM COMMAND -----------------
 async def cmd_my_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     count = sum(1 for u in users.values() if u.get("referrer_id") == uid and u.get("first_package_activated", False))
     await update.message.reply_text(f"Your qualified friends are {count}")
 
+# ----------------- NEW: WITHDRAWAL SYSTEM -----------------
 async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = get_user(uid)
@@ -387,7 +372,7 @@ async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TY
 
     if user.get("withdraw_state") == "address":
         user["withdraw_state"] = "amount"
-        user["withdraw_address"] = message_text
+        user["withdraw_address"] = message_text  # Store the address
         await update.message.reply_text("Enter your withdrawal amount.")
     elif user.get("withdraw_state") == "amount":
         try:
@@ -402,14 +387,16 @@ async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TY
                 user["withdraw_state"] = None
                 user["withdraw_address"] = None
                 return
+            # Calculate qualified friends
             qualified_friends = sum(1 for u in users.values() if u.get("referrer_id") == uid and u.get("first_package_activated", False))
+            # Notify admin channel
             if ADMIN_CHANNEL_ID:
                 message = f"New Withdrawal Request:\nUser ID: {uid}\nAddress: {user['withdraw_address']}\nAmount: {amount} USDT\nQualified Friends: {qualified_friends}"
                 try:
                     await app.bot.send_message(chat_id=ADMIN_CHANNEL_ID, text=message)
                 except Exception as e:
                     logger.error(f"Failed to send notification to admin channel: {e}")
-                    add_balance(uid, amount)
+                    add_balance(uid, amount)  # Refund if notification fails
                     await update.message.reply_text("Withdrawal request failed. Contact admin.")
                     user["withdraw_state"] = None
                     user["withdraw_address"] = None
@@ -445,14 +432,14 @@ async def initialize_app():
             await app.bot.set_webhook(webhook_url)
             logger.info(f"Webhook set to {webhook_url}")
         else:
-            logger.warning("BASE_URL not set. Use /set-webhook endpoint after deployment.")
+            logger.warning("BASE_URL not set. Running FastAPI server only. Use /set-webhook to configure Telegram webhook.")
     except Exception as e:
         logger.error(f"Error initializing app: {e}")
         raise
 
 if __name__ == "__main__":
     missing = []
-    for name in ["BOT_TOKEN", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET", "GCS_BUCKET_NAME"]:
+    for name in ["BOT_TOKEN", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET"]:
         if not globals().get(name):
             missing.append(name)
     if missing:
