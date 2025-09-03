@@ -31,7 +31,7 @@ PORT = int(os.getenv("PORT", "8000"))
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID", "-1003095776330")  # ID of the private channel for admin notifications
 
 NOWPAY_API = "https://api.nowpayments.io/v1"
-USDT_BSC_CODE = "usdtbsc"
+USDT_BSC_CODE = "USDTBSC"
 PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
 PACKAGE_DAYS = 60
 MIN_WITHDRAWAL = 1.5  # Minimum withdrawal amount
