@@ -197,6 +197,7 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
 @api.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
     update = await request.json()
+    await app.initialize()  # Ensure initialization before processing update
     await app.process_update(Update.de_json(update, app.bot))
     return {"ok": True}
 
@@ -431,7 +432,8 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_withdraw_
 async def lifespan(app):
     global next_deposit_address
     # Startup logic
-    await app.initialize()
+    await app.initialize()  # Explicitly initialize the Telegram Application
+    logger.info("Telegram Application initialized")
     if BASE_URL:
         webhook_url = f"{BASE_URL}/telegram/webhook"
         await app.bot.set_webhook(webhook_url)
