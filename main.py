@@ -49,12 +49,6 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     next_deposit_address = None
 
-# Initialize next_deposit_address at startup
-if next_deposit_address is None:
-    next_deposit_address = nowpayments_create_payment(0)["pay_address"]  # Dummy user_id 0 for extra address
-    with open("next_address.json", "w") as f:
-        json.dump({"address": next_deposit_address}, f)
-
 # Memory utilities
 def save_users():
     with open("users.json", "w") as f:
@@ -430,6 +424,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_withdraw_
 
 @api.on_event("startup")
 async def startup_event():
+    global next_deposit_address
     await app.initialize()
     if BASE_URL:
         webhook_url = f"{BASE_URL}/telegram/webhook"
@@ -437,6 +432,10 @@ async def startup_event():
         logger.info(f"Webhook set to {webhook_url}")
     else:
         logger.warning("BASE_URL not set. Use /set-webhook to configure Telegram webhook.")
+    if next_deposit_address is None:
+        next_deposit_address = nowpayments_create_payment(0)["pay_address"]  # Dummy user_id 0 for extra address
+        with open("next_address.json", "w") as f:
+            json.dump({"address": next_deposit_address}, f)
 
 @api.on_event("shutdown")
 async def shutdown_event():
