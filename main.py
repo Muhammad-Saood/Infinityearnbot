@@ -50,7 +50,7 @@ except (FileNotFoundError, json.JSONDecodeError):
     next_deposit_address = None
 
 # Initialize next_deposit_address at startup
-if not next_deposit_address:
+if next_deposit_address is None:
     next_deposit_address = nowpayments_create_payment(0)["pay_address"]  # Dummy user_id 0 for extra address
     with open("next_address.json", "w") as f:
         json.dump({"address": next_deposit_address}, f)
@@ -64,7 +64,9 @@ def save_processed_orders():
     with open("processed_orders.json", "w") as f:
         json.dump(list(processed_orders), f)
 
-def save_next_address():
+def save_next_address(new_address: str):
+    global next_deposit_address
+    next_deposit_address = new_address
     with open("next_address.json", "w") as f:
         json.dump({"address": next_deposit_address}, f)
 
@@ -254,9 +256,7 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Your permanent deposit address: {next_deposit_address}")
         # Request new address
         new_address_data = nowpayments_create_payment(0)  # Dummy user_id 0 for extra address
-        global next_deposit_address
-        next_deposit_address = new_address_data["pay_address"]
-        save_next_address()
+        save_next_address(new_address_data["pay_address"])
     elif user.get("deposit_address"):
         await update.message.reply_text(f"Your permanent deposit address: {user['deposit_address']}")
     else:
@@ -442,7 +442,7 @@ async def startup_event():
 async def shutdown_event():
     save_users()
     save_processed_orders()
-    save_next_address()
+    save_next_address(next_deposit_address)  # Save current address on shutdown
     await app.stop()
 
 @api.get("/")
@@ -488,7 +488,7 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
 async def telegram_webhook(request: Request):
     update = await request.json()
     await app.process_update(Update.de_json(update, app.bot))
-    return {"ok": True}
+    return {"ok": True"}
 
 @api.get("/set-webhook")
 async def set_webhook():
