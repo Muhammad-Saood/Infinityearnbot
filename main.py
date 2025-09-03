@@ -14,6 +14,11 @@ from pydantic import BaseModel
 from typing import Union
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from contextlib import asynccontextmanager
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -422,9 +427,10 @@ app.add_handler(CommandHandler("my_team", cmd_my_team))
 app.add_handler(CommandHandler("withdraw", cmd_withdraw))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_withdraw_input))
 
-@api.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app):
     global next_deposit_address
+    # Startup logic
     await app.initialize()
     if BASE_URL:
         webhook_url = f"{BASE_URL}/telegram/webhook"
@@ -436,13 +442,14 @@ async def startup_event():
         next_deposit_address = nowpayments_create_payment(0)["pay_address"]  # Dummy user_id 0 for extra address
         with open("next_address.json", "w") as f:
             json.dump({"address": next_deposit_address}, f)
-
-@api.on_event("shutdown")
-async def shutdown_event():
+    yield
+    # Shutdown logic
     save_users()
     save_processed_orders()
     save_next_address(next_deposit_address)  # Save current address on shutdown
     await app.stop()
+
+api.router.lifespan = lifespan
 
 @api.get("/")
 def root():
