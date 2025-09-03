@@ -138,10 +138,14 @@ def nowpayments_create_payment(user_id: int) -> Dict[str, Any]:
         "order_id": f"{user_id}-{int(time.time())}",
         "ipn_callback_url": f"{BASE_URL}/ipn/nowpayments"
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    logger.info(f"Created payment for user {user_id} with order_id {payload['order_id']}")
-    return resp.json()
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        logger.info(f"Created payment for user {user_id} with order_id {payload['order_id']}")
+        return resp.json()
+    except Exception as e:
+        logger.error(f"Failed to create payment for user {user_id}: {str(e)}")
+        raise
 
 def verify_nowpay_signature(raw_body: bytes, signature: str) -> bool:
     try:
@@ -250,13 +254,18 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BASE_URL or not NOWPAY_API_KEY:
         await update.message.reply_text("Service not configured. Contact admin.")
         return
+    logger.info(f"next_deposit_address: {next_deposit_address}")  # Debug log
     if not user.get("deposit_address") and next_deposit_address:
         user["deposit_address"] = next_deposit_address
         save_users()
         await update.message.reply_text(f"Your permanent deposit address: {next_deposit_address}")
         # Request new address
-        new_address_data = nowpayments_create_payment(0)  # Dummy user_id 0 for extra address
-        save_next_address(new_address_data["pay_address"])
+        try:
+            new_address_data = nowpayments_create_payment(0)  # Dummy user_id 0 for extra address
+            save_next_address(new_address_data["pay_address"])
+            logger.info(f"New deposit address set: {new_address_data['pay_address']}")
+        except Exception as e:
+            logger.error(f"Failed to request new deposit address: {str(e)}")
     elif user.get("deposit_address"):
         await update.message.reply_text(f"Your permanent deposit address: {user['deposit_address']}")
     else:
@@ -439,14 +448,19 @@ async def lifespan(app):
     else:
         logger.warning("BASE_URL not set. Use /set-webhook to configure Telegram webhook.")
     if next_deposit_address is None:
-        next_deposit_address = nowpayments_create_payment(0)["pay_address"]  # Dummy user_id 0 for extra address
-        with open("next_address.json", "w") as f:
-            json.dump({"address": next_deposit_address}, f)
+        try:
+            new_address_data = nowpayments_create_payment(0)  # Dummy user_id 0 for extra address
+            next_deposit_address = new_address_data["pay_address"]
+            with open("next_address.json", "w") as f:
+                json.dump({"address": next_deposit_address}, f)
+            logger.info(f"Initial deposit address set: {next_deposit_address}")
+        except Exception as e:
+            logger.error(f"Failed to set initial deposit address: {str(e)}")
     yield
     # Shutdown logic
     save_users()
     save_processed_orders()
-    save_next_address(next_deposit_address)  # Save current address on shutdown
+    save_next_address(next_deposit_address)
     await app.stop()
 
 api.router.lifespan = lifespan
