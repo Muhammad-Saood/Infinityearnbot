@@ -8,77 +8,57 @@ from typing import Optional, Dict, Any, List
 import requests
 import asyncio
 import logging
-import uvicorn
+
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler
+from telegram.ext import filters
 from fastapi import FastAPI, Request, Header, HTTPException
+import uvicorn
 from pydantic import BaseModel
 from typing import Union
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
-from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Load .env file for local testing (ignored on Koyeb)
+load_dotenv()
 
-# Load environment variables
+# ----------------- CONFIG -----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
 NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@InfinityEarn2x")
-BASE_URL = os.getenv("BASE_URL")
+BASE_URL = os.getenv("BASE_URL")  # Can be None initially
 PORT = int(os.getenv("PORT", "8000"))
-ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID", "-1003095776330")
+ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID", "-1003095776330")  # ID of the private channel for admin notifications
 
 NOWPAY_API = "https://api.nowpayments.io/v1"
 USDT_BSC_CODE = "usdtbsc"
 PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000: 33.33}
 PACKAGE_DAYS = 60
-MIN_WITHDRAWAL = 1.5
+MIN_WITHDRAWAL = 1.5  # Minimum withdrawal amount
 
-# Persistent storage
+# Persistent storage for users and processed orders
 try:
     with open("users.json", "r") as f:
         users: Dict[int, Dict[str, Any]] = {int(k): v for k, v in json.load(f).items()}
 except (FileNotFoundError, json.JSONDecodeError, ValueError):
-    users: Dict[int, Dict[str, Any]] = {}
+    users: Dict[int, Dict[str, Any]] = {}  # uid: {"balance": 0.0, "verified": False, "referrer_id": None, "packages": [], "first_package_activated": False, "withdraw_state": None}
 
 try:
     with open("processed_orders.json", "r") as f:
         processed_orders = set(json.load(f))
 except (FileNotFoundError, json.JSONDecodeError):
-    processed_orders = set()
+    processed_orders = set()  # Default to empty set if file doesn’t exist or is invalid
 
-try:
-    with open("next_address.json", "r") as f:
-        next_deposit_address = json.load(f).get("address")
-except (FileNotFoundError, json.JSONDecodeError):
-    next_deposit_address = None
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-first_address_assigned = False
-if "first_address_assigned" in users:
-    first_address_assigned = users["first_address_assigned"]
-    del users["first_address_assigned"]
-else:
-    with open("users.json", "w") as f:
-        json.dump(users, f)
+api = FastAPI()
 
-# Memory utilities
+# ----------------- MEMORY UTILITIES -----------------
 def save_users():
-    global first_address_assigned
-    users["first_address_assigned"] = first_address_assigned
     with open("users.json", "w") as f:
         json.dump(users, f)
-    del users["first_address_assigned"]
-
-def save_processed_orders():
-    with open("processed_orders.json", "w") as f:
-        json.dump(list(processed_orders), f)
-
-def save_next_address(new_address: str):
-    global next_deposit_address
-    next_deposit_address = new_address
-    with open("next_address.json", "w") as f:
-        json.dump({"address": next_deposit_address}, f)
 
 def ensure_user(uid: int, referrer_id: Optional[int] = None):
     if uid not in users:
@@ -89,7 +69,7 @@ def ensure_user(uid: int, referrer_id: Optional[int] = None):
             "packages": [],
             "first_package_activated": False,
             "withdraw_state": None,
-            "deposit_address": None
+            "deposit_address": None  # Add deposit_address to store the first generated address
         }
         save_users()
     elif referrer_id and not users[uid].get("referrer_id"):
@@ -122,9 +102,13 @@ def append_package(uid: int, pack: Dict[str, Any]):
 
 def active_packages(user: Dict[str, Any]) -> List[Dict[str, Any]]:
     now = dt.datetime.now(dt.UTC)
-    return [p for p in user.get("packages", []) if dt.datetime.fromtimestamp(p["end_ts"], dt.UTC) > now]
+    out = []
+    for p in user.get("packages", []):
+        if dt.datetime.fromtimestamp(p["end_ts"], dt.UTC) > now:
+            out.append(p)
+    return out
 
-# NOWPayments utilities
+# ----------------- NOWPAYMENTS -----------------
 def get_min_amount():
     url = f"{NOWPAY_API}/min-amount"
     headers = {"x-api-key": NOWPAY_API_KEY}
@@ -133,8 +117,7 @@ def get_min_amount():
         resp = requests.get(url, headers=headers, params=params, timeout=10)
         resp.raise_for_status()
         return float(resp.json().get('min_amount', 5.0))
-    except Exception as e:
-        logger.error(f"Failed to get min amount: {str(e)}")
+    except Exception:
         return 5.0
 
 def nowpayments_create_payment(user_id: int) -> Dict[str, Any]:
@@ -151,19 +134,12 @@ def nowpayments_create_payment(user_id: int) -> Dict[str, Any]:
         "ipn_callback_url": f"{BASE_URL}/ipn/nowpayments"
     }
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
         resp.raise_for_status()
         logger.info(f"Created payment for user {user_id} with order_id {payload['order_id']}")
         return resp.json()
-    except requests.exceptions.RequestException as e:
-        error_msg = str(e)
-        if hasattr(e.response, 'status_code'):
-            logger.error(f"API error {e.response.status_code}: {error_msg}")
-        else:
-            logger.error(f"Network error: {error_msg}")
-        raise
     except Exception as e:
-        logger.error(f"Unexpected error creating payment: {str(e)}")
+        logger.error(f"Error creating payment for user {user_id}: {str(e)}")
         raise
 
 def verify_nowpay_signature(raw_body: bytes, signature: str) -> bool:
@@ -172,23 +148,20 @@ def verify_nowpay_signature(raw_body: bytes, signature: str) -> bool:
         sorted_body = json.dumps(body, separators=(",", ":"), sort_keys=True)
         digest = hmac.new(NOWPAY_IPN_SECRET.encode("utf-8"), sorted_body.encode("utf-8"), hashlib.sha512).hexdigest()
         return digest == signature
-    except Exception as e:
-        logger.error(f"Signature verification failed: {str(e)}")
+    except Exception:
         return False
 
-# FastAPI endpoints
-api = FastAPI()
-
+# ----------------- FASTAPI ENDPOINTS -----------------
 @api.get("/")
 def root():
     return {"ok": True}
 
+# Pydantic model for NowPayments IPN data
 class NowPaymentsIPN(BaseModel):
     payment_status: str
     actually_paid: Union[str, float, int]
     pay_amount: Union[str, float]
     order_id: str
-    pay_address: str
 
 @api.post("/ipn/nowpayments")
 async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None)):
@@ -199,19 +172,17 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
     status = (data.payment_status or "").lower()
     credited = float(data.actually_paid or data.pay_amount or 0.0)
     order_id = data.order_id
-    pay_address = data.pay_address
-    logger.info(f"Received IPN for order_id {order_id}, status {status}, credited {credited}, address {pay_address}")
+    logger.info(f"Received IPN for order_id {order_id}, status {status}, credited {credited}")
     if status in {"finished", "confirmed"} and order_id and credited > 0:
         if order_id not in processed_orders:
             try:
                 tg_id = int(str(order_id).split("-")[0])
-                user = get_user(tg_id)
-                if user.get("deposit_address") == pay_address:
-                    add_balance(tg_id, credited)
-                    await app.bot.send_message(chat_id=tg_id, text=f"{credited} USDT Deposit Successfully")
-                    processed_orders.add(order_id)
-                    save_processed_orders()
-                    logger.info(f"Processed payment for order_id {order_id}, credited {credited} to user {tg_id}")
+                add_balance(tg_id, credited)
+                await app.bot.send_message(chat_id=tg_id, text=f"{credited} USDT Deposit Successfully")
+                processed_orders.add(order_id)
+                with open("processed_orders.json", "w") as f:
+                    json.dump(list(processed_orders), f)
+                logger.info(f"Processed payment for order_id {order_id}, credited {credited} to user {tg_id}")
             except Exception as e:
                 logger.error(f"Error processing payment for order_id {order_id}: {e}")
         else:
@@ -221,9 +192,8 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
 @api.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
     update = await request.json()
-    await app.initialize()
     await app.process_update(Update.de_json(update, app.bot))
-    return {"ok": True}
+    return {"ok": True"}
 
 @api.get("/set-webhook")
 async def set_webhook():
@@ -236,20 +206,7 @@ async def set_webhook():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to set webhook: {str(e)}")
 
-@api.post("/force-address")
-async def force_address(request: Request):
-    global next_deposit_address
-    try:
-        new_address_data = nowpayments_create_payment(0)
-        next_deposit_address = new_address_data["pay_address"]
-        save_next_address(next_deposit_address)
-        logger.info(f"Forced deposit address set: {next_deposit_address}")
-        return {"status": "success", "address": next_deposit_address}
-    except Exception as e:
-        logger.error(f"Failed to force address: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to create address: {str(e)}")
-
-# Telegram bot handlers
+# ----------------- TELEGRAM BOT HANDLERS -----------------
 WELCOME_TEXT = (
     'Welcome to "Infinity Earn 2x" platform where you can:\n\n'
     '👉 Invest 10 USDT and earn 0.33 USDT daily for 60 days.\n'
@@ -282,39 +239,31 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(WELCOME_TEXT, reply_markup=InlineKeyboardMarkup(kb))
 
 async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global first_address_assigned, next_deposit_address
     uid = update.effective_user.id
     user = get_user(uid)
     if not BASE_URL or not NOWPAY_API_KEY:
         await update.message.reply_text("Service not configured. Contact admin.")
         return
-    logger.info(f"next_deposit_address: {next_deposit_address}, first_address_assigned: {first_address_assigned}")
     if not user.get("deposit_address"):
-        if not first_address_assigned and next_deposit_address:
-            user["deposit_address"] = next_deposit_address
-            first_address_assigned = True
+        try:
+            pay = nowpayments_create_payment(uid)
+            pay_address = pay.get("pay_address") or pay.get("wallet_address") or pay.get("payment_address")
+            if not pay_address:
+                inv = pay.get("invoice_url") or pay.get("payment_url") or pay.get("url")
+                if inv:
+                    await update.message.reply_text(f"{inv}\n\n(Open and pay on BSC/USDT)")
+                    return
+                await update.message.reply_text("Could not get deposit address. Try again later.")
+                return
+            user["deposit_address"] = pay_address
             save_users()
-            await update.message.reply_text(f"Your permanent deposit address: {next_deposit_address}")
-            try:
-                new_address_data = nowpayments_create_payment(0)
-                save_next_address(new_address_data["pay_address"])
-                logger.info(f"New deposit address set for future users: {new_address_data['pay_address']}")
-            except Exception as e:
-                logger.error(f"Failed to request new deposit address: {str(e)}")
-        elif next_deposit_address:
-            user["deposit_address"] = next_deposit_address
-            save_users()
-            await update.message.reply_text(f"Your permanent deposit address: {next_deposit_address}")
-            try:
-                new_address_data = nowpayments_create_payment(0)
-                save_next_address(new_address_data["pay_address"])
-                logger.info(f"New deposit address set: {new_address_data['pay_address']}")
-            except Exception as e:
-                logger.error(f"Failed to request new deposit address: {str(e)}")
-        else:
-            await update.message.reply_text("No addresses available. Try again later. The system is working to obtain one.")
+            await update.message.reply_text(f"Your receiving address of USDT on BSC (Binance Smart Chain) is given below 👇:")
+            await update.message.reply_text(f" {pay_address}")
+        except Exception as e:
+            await update.message.reply_text(f"Error creating deposit address: {str(e)}")
     else:
-        await update.message.reply_text(f"Your permanent deposit address: {user['deposit_address']}")
+        await update.message.reply_text(f"Your receiving address of USDT on BSC (Binance Smart Chain) is given below 👇:")
+        await update.message.reply_text(f" {user['deposit_address']}")
 
 def packages_keyboard():
     rows = [
@@ -414,11 +363,13 @@ async def cmd_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = f"https://t.me/{bot_info.username}?start=ref{uid}"
     await update.message.reply_text(link)
 
+# ----------------- NEW: MY TEAM COMMAND -----------------
 async def cmd_my_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     count = sum(1 for u in users.values() if u.get("referrer_id") == uid and u.get("first_package_activated", False))
     await update.message.reply_text(f"Your qualified friends are {count}")
 
+# ----------------- NEW: WITHDRAWAL SYSTEM -----------------
 async def cmd_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = get_user(uid)
@@ -432,7 +383,7 @@ async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TY
 
     if user.get("withdraw_state") == "address":
         user["withdraw_state"] = "amount"
-        user["withdraw_address"] = message_text
+        user["withdraw_address"] = message_text  # Store the address
         await update.message.reply_text("Enter your withdrawal amount.")
     elif user.get("withdraw_state") == "amount":
         try:
@@ -447,14 +398,16 @@ async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TY
                 user["withdraw_state"] = None
                 user["withdraw_address"] = None
                 return
+            # Calculate qualified friends
             qualified_friends = sum(1 for u in users.values() if u.get("referrer_id") == uid and u.get("first_package_activated", False))
+            # Notify admin channel
             if ADMIN_CHANNEL_ID:
                 message = f"New Withdrawal Request:\nUser ID: {uid}\nAddress: {user['withdraw_address']}\nAmount: {amount} USDT\nQualified Friends: {qualified_friends}"
                 try:
                     await app.bot.send_message(chat_id=ADMIN_CHANNEL_ID, text=message)
                 except Exception as e:
                     logger.error(f"Failed to send notification to admin channel: {e}")
-                    add_balance(uid, amount)
+                    add_balance(uid, amount)  # Refund if notification fails
                     await update.message.reply_text("Withdrawal request failed. Contact admin.")
                     user["withdraw_state"] = None
                     user["withdraw_address"] = None
@@ -466,10 +419,8 @@ async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_text("Invalid amount. Please enter a valid number.")
             user["withdraw_state"] = "amount"
 
-# Setup & Run with Lifespan
-api = FastAPI()
+# ----------------- SETUP & RUN -----------------
 app = Application.builder().token(BOT_TOKEN).build()
-
 app.add_handler(CommandHandler("start", cmd_start))
 app.add_handler(CommandHandler("deposit", cmd_deposit))
 app.add_handler(CommandHandler("packages", cmd_packages))
@@ -482,119 +433,21 @@ app.add_handler(CommandHandler("my_team", cmd_my_team))
 app.add_handler(CommandHandler("withdraw", cmd_withdraw))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_withdraw_input))
 
-@asynccontextmanager
-async def lifespan(app):
-    global next_deposit_address
-    # Startup logic
-    if BASE_URL:
-        webhook_url = f"{BASE_URL}/telegram/webhook"
-        try:
+async def initialize_app():
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        await app.initialize()
+        if BASE_URL:
+            webhook_url = f"{BASE_URL}/telegram/webhook"
             await app.bot.set_webhook(webhook_url)
             logger.info(f"Webhook set to {webhook_url}")
-        except Exception as e:
-            logger.error(f"Failed to set webhook: {str(e)}")
-    else:
-        logger.warning("BASE_URL not set. Use /set-webhook to configure Telegram webhook.")
-    if next_deposit_address is None:
-        logger.info("Attempting to create initial deposit address...")
-        attempt = 0
-        while next_deposit_address is None:
-            attempt += 1
-            try:
-                new_address_data = nowpayments_create_payment(0)
-                next_deposit_address = new_address_data["pay_address"]
-                with open("next_address.json", "w") as f:
-                    json.dump({"address": next_deposit_address}, f)
-                logger.info(f"Initial deposit address set after attempt {attempt}: {next_deposit_address}")
-            except requests.exceptions.RequestException as e:
-                if hasattr(e.response, 'status_code'):
-                    logger.error(f"API error {e.response.status_code} on attempt {attempt}: {str(e)}. Retrying in 60 seconds...")
-                else:
-                    logger.error(f"Network error on attempt {attempt}: {str(e)}. Retrying in 60 seconds...")
-                await asyncio.sleep(60)
-            except Exception as e:
-                logger.error(f"Unexpected error on attempt {attempt}: {str(e)}. Retrying in 60 seconds...")
-                await asyncio.sleep(60)
-    yield
-    # Shutdown logic
-    save_users()
-    save_processed_orders()
-    save_next_address(next_deposit_address)
-    await app.stop()
-
-api.router.lifespan = lifespan
-
-@api.get("/")
-def root():
-    return {"ok": True}
-
-class NowPaymentsIPN(BaseModel):
-    payment_status: str
-    actually_paid: Union[str, float, int]
-    pay_amount: Union[str, float]
-    order_id: str
-    pay_address: str
-
-@api.post("/ipn/nowpayments")
-async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None)):
-    raw = await request.body()
-    if not x_nowpayments_sig or not verify_nowpay_signature(raw, x_nowpayments_sig):
-        raise HTTPException(status_code=400, detail="Bad signature")
-    data = NowPaymentsIPN(**json.loads(raw.decode("utf-8")))
-    status = (data.payment_status or "").lower()
-    credited = float(data.actually_paid or data.pay_amount or 0.0)
-    order_id = data.order_id
-    pay_address = data.pay_address
-    logger.info(f"Received IPN for order_id {order_id}, status {status}, credited {credited}, address {pay_address}")
-    if status in {"finished", "confirmed"} and order_id and credited > 0:
-        if order_id not in processed_orders:
-            try:
-                tg_id = int(str(order_id).split("-")[0])
-                user = get_user(tg_id)
-                if user.get("deposit_address") == pay_address:
-                    add_balance(tg_id, credited)
-                    await app.bot.send_message(chat_id=tg_id, text=f"{credited} USDT Deposit Successfully")
-                    processed_orders.add(order_id)
-                    save_processed_orders()
-                    logger.info(f"Processed payment for order_id {order_id}, credited {credited} to user {tg_id}")
-            except Exception as e:
-                logger.error(f"Error processing payment for order_id {order_id}: {e}")
         else:
-            logger.info(f"Duplicate payment notification for order_id {order_id} ignored")
-    return {"ok": True}
-
-@api.post("/telegram/webhook")
-async def telegram_webhook(request: Request):
-    update = await request.json()
-    await app.initialize()
-    await app.process_update(Update.de_json(update, app.bot))
-    return {"ok": True}
-
-@api.get("/set-webhook")
-async def set_webhook():
-    if not BASE_URL:
-        raise HTTPException(status_code=400, detail="BASE_URL not set in environment variables")
-    webhook_url = f"{BASE_URL}/telegram/webhook"
-    try:
-        await app.bot.set_webhook(webhook_url)
-        return {"status": "Webhook set successfully", "webhook_url": webhook_url}
+            logger.warning("BASE_URL not set. Running FastAPI server only. Use /set-webhook to configure Telegram webhook.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to set webhook: {str(e)}")
+        logger.error(f"Error initializing app: {e}")
+        raise
 
-@api.post("/force-address")
-async def force_address(request: Request):
-    global next_deposit_address
-    try:
-        new_address_data = nowpayments_create_payment(0)
-        next_deposit_address = new_address_data["pay_address"]
-        save_next_address(next_deposit_address)
-        logger.info(f"Forced deposit address set: {next_deposit_address}")
-        return {"status": "success", "address": next_deposit_address}
-    except Exception as e:
-        logger.error(f"Failed to force address: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to create address: {str(e)}")
-
-# Run the application
 if __name__ == "__main__":
     missing = []
     for name in ["BOT_TOKEN", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET"]:
@@ -602,6 +455,10 @@ if __name__ == "__main__":
             missing.append(name)
     if missing:
         raise RuntimeError(f"Missing required config values: {', '.join(missing)}")
-    config = uvicorn.Config(api, host="0.0.0.0", port=PORT, log_level="info", workers=1)
-    server = uvicorn.Server(config)
-    asyncio.run(server.serve())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(initialize_app())
+        uvicorn.run(api, host="0.0.0.0", port=PORT, log_level="info", workers=1)
+    finally:
+        loop.close()
