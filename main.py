@@ -35,7 +35,7 @@ PACKAGES = {10: 0.33, 20: 0.66, 50: 1.66, 100: 3.33, 200: 6.66, 500: 16.66, 1000
 PACKAGE_DAYS = 60
 MIN_WITHDRAWAL = 1.5
 
-# Persistent storage (ephemeral on Koyeb, save frequently)
+# Persistent storage
 try:
     with open("users.json", "r") as f:
         users: Dict[int, Dict[str, Any]] = {int(k): v for k, v in json.load(f).items()}
@@ -54,7 +54,6 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     next_deposit_address = None
 
-# Flag to track if the first address has been assigned
 first_address_assigned = False
 if "first_address_assigned" in users:
     first_address_assigned = users["first_address_assigned"]
@@ -134,7 +133,8 @@ def get_min_amount():
         resp = requests.get(url, headers=headers, params=params, timeout=10)
         resp.raise_for_status()
         return float(resp.json().get('min_amount', 5.0))
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to get min amount: {str(e)}")
         return 5.0
 
 def nowpayments_create_payment(user_id: int) -> Dict[str, Any]:
@@ -151,12 +151,19 @@ def nowpayments_create_payment(user_id: int) -> Dict[str, Any]:
         "ipn_callback_url": f"{BASE_URL}/ipn/nowpayments"
     }
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
         resp.raise_for_status()
         logger.info(f"Created payment for user {user_id} with order_id {payload['order_id']}")
         return resp.json()
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error creating deposit address for user {user_id}: {str(e)}. Retrying...")
+        error_msg = str(e)
+        if hasattr(e.response, 'status_code'):
+            logger.error(f"API error {e.response.status_code}: {error_msg}")
+        else:
+            logger.error(f"Network error: {error_msg}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error creating payment: {str(e)}")
         raise
 
 def verify_nowpay_signature(raw_body: bytes, signature: str) -> bool:
@@ -165,7 +172,8 @@ def verify_nowpay_signature(raw_body: bytes, signature: str) -> bool:
         sorted_body = json.dumps(body, separators=(",", ":"), sort_keys=True)
         digest = hmac.new(NOWPAY_IPN_SECRET.encode("utf-8"), sorted_body.encode("utf-8"), hashlib.sha512).hexdigest()
         return digest == signature
-    except Exception:
+    except Exception as e:
+        logger.error(f"Signature verification failed: {str(e)}")
         return False
 
 # FastAPI endpoints
@@ -215,7 +223,7 @@ async def telegram_webhook(request: Request):
     update = await request.json()
     await app.initialize()
     await app.process_update(Update.de_json(update, app.bot))
-    return {"ok": True}
+    return {"ok": True"}
 
 @api.get("/set-webhook")
 async def set_webhook():
@@ -227,6 +235,19 @@ async def set_webhook():
         return {"status": "Webhook set successfully", "webhook_url": webhook_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to set webhook: {str(e)}")
+
+@api.post("/force-address")
+async def force_address(request: Request):
+    global next_deposit_address
+    try:
+        new_address_data = nowpayments_create_payment(0)
+        next_deposit_address = new_address_data["pay_address"]
+        save_next_address(next_deposit_address)
+        logger.info(f"Forced deposit address set: {next_deposit_address}")
+        return {"status": "success", "address": next_deposit_address}
+    except Exception as e:
+        logger.error(f"Failed to force address: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create address: {str(e)}")
 
 # Telegram bot handlers
 WELCOME_TEXT = (
@@ -467,24 +488,32 @@ async def lifespan(app):
     # Startup logic
     if BASE_URL:
         webhook_url = f"{BASE_URL}/telegram/webhook"
-        await app.bot.set_webhook(webhook_url)
-        logger.info(f"Webhook set to {webhook_url}")
+        try:
+            await app.bot.set_webhook(webhook_url)
+            logger.info(f"Webhook set to {webhook_url}")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {str(e)}")
     else:
         logger.warning("BASE_URL not set. Use /set-webhook to configure Telegram webhook.")
     if next_deposit_address is None:
         logger.info("Attempting to create initial deposit address...")
+        attempt = 0
         while next_deposit_address is None:
+            attempt += 1
             try:
                 new_address_data = nowpayments_create_payment(0)
                 next_deposit_address = new_address_data["pay_address"]
                 with open("next_address.json", "w") as f:
                     json.dump({"address": next_deposit_address}, f)
-                logger.info(f"Initial deposit address set: {next_deposit_address}")
+                logger.info(f"Initial deposit address set after attempt {attempt}: {next_deposit_address}")
             except requests.exceptions.RequestException as e:
-                logger.error(f"Error creating initial deposit address: {str(e)}. Retrying in 60 seconds...")
-                await asyncio.sleep(60)  # Wait 60 seconds before retrying
+                if hasattr(e.response, 'status_code'):
+                    logger.error(f"API error {e.response.status_code} on attempt {attempt}: {str(e)}. Retrying in 60 seconds...")
+                else:
+                    logger.error(f"Network error on attempt {attempt}: {str(e)}. Retrying in 60 seconds...")
+                await asyncio.sleep(60)
             except Exception as e:
-                logger.error(f"Unexpected error creating initial deposit address: {str(e)}. Retrying in 60 seconds...")
+                logger.error(f"Unexpected error on attempt {attempt}: {str(e)}. Retrying in 60 seconds...")
                 await asyncio.sleep(60)
     yield
     # Shutdown logic
@@ -539,7 +568,7 @@ async def telegram_webhook(request: Request):
     update = await request.json()
     await app.initialize()
     await app.process_update(Update.de_json(update, app.bot))
-    return {"ok": True}
+    return {"ok": True"}
 
 @api.get("/set-webhook")
 async def set_webhook():
@@ -551,6 +580,19 @@ async def set_webhook():
         return {"status": "Webhook set successfully", "webhook_url": webhook_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to set webhook: {str(e)}")
+
+@api.post("/force-address")
+async def force_address(request: Request):
+    global next_deposit_address
+    try:
+        new_address_data = nowpayments_create_payment(0)
+        next_deposit_address = new_address_data["pay_address"]
+        save_next_address(next_deposit_address)
+        logger.info(f"Forced deposit address set: {next_deposit_address}")
+        return {"status": "success", "address": next_deposit_address}
+    except Exception as e:
+        logger.error(f"Failed to force address: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create address: {str(e)}")
 
 # Run the application
 if __name__ == "__main__":
