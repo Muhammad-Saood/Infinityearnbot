@@ -54,10 +54,22 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     next_deposit_address = None
 
+# Flag to track if the first address has been assigned
+first_address_assigned = False
+if "first_address_assigned" in users:
+    first_address_assigned = users["first_address_assigned"]
+    del users["first_address_assigned"]  # Clean up from previous runs
+else:
+    with open("users.json", "w") as f:
+        json.dump(users, f)  # Ensure users.json is updated
+
 # Memory utilities
 def save_users():
+    global first_address_assigned
+    users["first_address_assigned"] = first_address_assigned
     with open("users.json", "w") as f:
         json.dump(users, f)
+    del users["first_address_assigned"]  # Remove flag after saving
 
 def save_processed_orders():
     with open("processed_orders.json", "w") as f:
@@ -249,27 +261,41 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(WELCOME_TEXT, reply_markup=InlineKeyboardMarkup(kb))
 
 async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global first_address_assigned, next_deposit_address
     uid = update.effective_user.id
     user = get_user(uid)
     if not BASE_URL or not NOWPAY_API_KEY:
         await update.message.reply_text("Service not configured. Contact admin.")
         return
-    logger.info(f"next_deposit_address: {next_deposit_address}")  # Debug log
-    if not user.get("deposit_address") and next_deposit_address:
-        user["deposit_address"] = next_deposit_address
-        save_users()
-        await update.message.reply_text(f"Your permanent deposit address: {next_deposit_address}")
-        # Request new address
-        try:
-            new_address_data = nowpayments_create_payment(0)  # Dummy user_id 0 for extra address
-            save_next_address(new_address_data["pay_address"])
-            logger.info(f"New deposit address set: {new_address_data['pay_address']}")
-        except Exception as e:
-            logger.error(f"Failed to request new deposit address: {str(e)}")
-    elif user.get("deposit_address"):
-        await update.message.reply_text(f"Your permanent deposit address: {user['deposit_address']}")
+    logger.info(f"next_deposit_address: {next_deposit_address}, first_address_assigned: {first_address_assigned}")
+    if not user.get("deposit_address"):
+        if not first_address_assigned and next_deposit_address:
+            user["deposit_address"] = next_deposit_address
+            first_address_assigned = True
+            save_users()
+            await update.message.reply_text(f"Your permanent deposit address: {next_deposit_address}")
+            # Request a new address for future users
+            try:
+                new_address_data = nowpayments_create_payment(0)
+                save_next_address(new_address_data["pay_address"])
+                logger.info(f"New deposit address set for future users: {new_address_data['pay_address']}")
+            except Exception as e:
+                logger.error(f"Failed to request new deposit address: {str(e)}")
+        elif next_deposit_address:
+            user["deposit_address"] = next_deposit_address
+            save_users()
+            await update.message.reply_text(f"Your permanent deposit address: {next_deposit_address}")
+            # Request a new address
+            try:
+                new_address_data = nowpayments_create_payment(0)
+                save_next_address(new_address_data["pay_address"])
+                logger.info(f"New deposit address set: {new_address_data['pay_address']}")
+            except Exception as e:
+                logger.error(f"Failed to request new deposit address: {str(e)}")
+        else:
+            await update.message.reply_text("No addresses available. Try again later.")
     else:
-        await update.message.reply_text("No addresses available. Try again later.")
+        await update.message.reply_text(f"Your permanent deposit address: {user['deposit_address']}")
 
 def packages_keyboard():
     rows = [
@@ -448,14 +474,20 @@ async def lifespan(app):
     else:
         logger.warning("BASE_URL not set. Use /set-webhook to configure Telegram webhook.")
     if next_deposit_address is None:
-        try:
-            new_address_data = nowpayments_create_payment(0)  # Dummy user_id 0 for extra address
-            next_deposit_address = new_address_data["pay_address"]
-            with open("next_address.json", "w") as f:
-                json.dump({"address": next_deposit_address}, f)
-            logger.info(f"Initial deposit address set: {next_deposit_address}")
-        except Exception as e:
-            logger.error(f"Failed to set initial deposit address: {str(e)}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                new_address_data = nowpayments_create_payment(0)  # Dummy user_id 0 for extra address
+                next_deposit_address = new_address_data["pay_address"]
+                with open("next_address.json", "w") as f:
+                    json.dump({"address": next_deposit_address}, f)
+                logger.info(f"Initial deposit address set after attempt {attempt + 1}: {next_deposit_address}")
+                break
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed to set initial deposit address: {str(e)}")
+                if attempt == max_retries - 1:
+                    logger.critical("All attempts to set initial deposit address failed.")
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
     yield
     # Shutdown logic
     save_users()
