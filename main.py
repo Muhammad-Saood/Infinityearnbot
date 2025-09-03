@@ -58,10 +58,10 @@ except (FileNotFoundError, json.JSONDecodeError):
 first_address_assigned = False
 if "first_address_assigned" in users:
     first_address_assigned = users["first_address_assigned"]
-    del users["first_address_assigned"]  # Clean up from previous runs
+    del users["first_address_assigned"]
 else:
     with open("users.json", "w") as f:
-        json.dump(users, f)  # Ensure users.json is updated
+        json.dump(users, f)
 
 # Memory utilities
 def save_users():
@@ -69,7 +69,7 @@ def save_users():
     users["first_address_assigned"] = first_address_assigned
     with open("users.json", "w") as f:
         json.dump(users, f)
-    del users["first_address_assigned"]  # Remove flag after saving
+    del users["first_address_assigned"]
 
 def save_processed_orders():
     with open("processed_orders.json", "w") as f:
@@ -90,7 +90,7 @@ def ensure_user(uid: int, referrer_id: Optional[int] = None):
             "packages": [],
             "first_package_activated": False,
             "withdraw_state": None,
-            "deposit_address": None  # Add permanent deposit address
+            "deposit_address": None
         }
         save_users()
     elif referrer_id and not users[uid].get("referrer_id"):
@@ -155,8 +155,8 @@ def nowpayments_create_payment(user_id: int) -> Dict[str, Any]:
         resp.raise_for_status()
         logger.info(f"Created payment for user {user_id} with order_id {payload['order_id']}")
         return resp.json()
-    except Exception as e:
-        logger.error(f"Failed to create payment for user {user_id}: {str(e)}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error creating deposit address for user {user_id}: {str(e)}. Retrying...")
         raise
 
 def verify_nowpay_signature(raw_body: bytes, signature: str) -> bool:
@@ -180,7 +180,7 @@ class NowPaymentsIPN(BaseModel):
     actually_paid: Union[str, float, int]
     pay_amount: Union[str, float]
     order_id: str
-    pay_address: str  # Added to match address
+    pay_address: str
 
 @api.post("/ipn/nowpayments")
 async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None)):
@@ -198,7 +198,7 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
             try:
                 tg_id = int(str(order_id).split("-")[0])
                 user = get_user(tg_id)
-                if user.get("deposit_address") == pay_address:  # Match address
+                if user.get("deposit_address") == pay_address:
                     add_balance(tg_id, credited)
                     await app.bot.send_message(chat_id=tg_id, text=f"{credited} USDT Deposit Successfully")
                     processed_orders.add(order_id)
@@ -213,9 +213,9 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
 @api.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
     update = await request.json()
-    await app.initialize()  # Initialize Telegram Application before processing update
+    await app.initialize()
     await app.process_update(Update.de_json(update, app.bot))
-    return {"ok": True}
+    return {"ok": True"}
 
 @api.get("/set-webhook")
 async def set_webhook():
@@ -274,7 +274,6 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             first_address_assigned = True
             save_users()
             await update.message.reply_text(f"Your permanent deposit address: {next_deposit_address}")
-            # Request a new address for future users
             try:
                 new_address_data = nowpayments_create_payment(0)
                 save_next_address(new_address_data["pay_address"])
@@ -285,7 +284,6 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user["deposit_address"] = next_deposit_address
             save_users()
             await update.message.reply_text(f"Your permanent deposit address: {next_deposit_address}")
-            # Request a new address
             try:
                 new_address_data = nowpayments_create_payment(0)
                 save_next_address(new_address_data["pay_address"])
@@ -293,7 +291,7 @@ async def cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Failed to request new deposit address: {str(e)}")
         else:
-            await update.message.reply_text("No addresses available. Try again later.")
+            await update.message.reply_text("No addresses available. Try again later. The system is working to obtain one.")
     else:
         await update.message.reply_text(f"Your permanent deposit address: {user['deposit_address']}")
 
@@ -474,20 +472,20 @@ async def lifespan(app):
     else:
         logger.warning("BASE_URL not set. Use /set-webhook to configure Telegram webhook.")
     if next_deposit_address is None:
-        max_retries = 3
-        for attempt in range(max_retries):
+        logger.info("Attempting to create initial deposit address...")
+        while next_deposit_address is None:
             try:
-                new_address_data = nowpayments_create_payment(0)  # Dummy user_id 0 for extra address
+                new_address_data = nowpayments_create_payment(0)
                 next_deposit_address = new_address_data["pay_address"]
                 with open("next_address.json", "w") as f:
                     json.dump({"address": next_deposit_address}, f)
-                logger.info(f"Initial deposit address set after attempt {attempt + 1}: {next_deposit_address}")
-                break
+                logger.info(f"Initial deposit address set: {next_deposit_address}")
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error creating initial deposit address: {str(e)}. Retrying in 60 seconds...")
+                await asyncio.sleep(60)  # Wait 60 seconds before retrying
             except Exception as e:
-                logger.error(f"Attempt {attempt + 1} failed to set initial deposit address: {str(e)}")
-                if attempt == max_retries - 1:
-                    logger.critical("All attempts to set initial deposit address failed.")
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                logger.error(f"Unexpected error creating initial deposit address: {str(e)}. Retrying in 60 seconds...")
+                await asyncio.sleep(60)
     yield
     # Shutdown logic
     save_users()
@@ -539,9 +537,9 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
 @api.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
     update = await request.json()
-    await app.initialize()  # Initialize Telegram Application before processing update
+    await app.initialize()
     await app.process_update(Update.de_json(update, app.bot))
-    return {"ok": True}
+    return {"ok": True"}
 
 @api.get("/set-webhook")
 async def set_webhook():
