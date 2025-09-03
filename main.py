@@ -193,7 +193,7 @@ async def ipn_nowpayments(request: Request, x_nowpayments_sig: str = Header(None
 async def telegram_webhook(request: Request):
     update = await request.json()
     await app.process_update(Update.de_json(update, app.bot))
-    return {"ok": True"}
+    return {"ok": True}
 
 @api.get("/set-webhook")
 async def set_webhook():
