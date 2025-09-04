@@ -418,6 +418,19 @@ async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TY
         except ValueError:
             await update.message.reply_text("Invalid amount. Please enter a valid number.")
             user["withdraw_state"] = "amount"
+            # ----------------- SELF-PINGING TASK -----------------
+PING_INTERVAL = 240  # 4 minutes in seconds
+
+async def ping_self():
+    while True:
+        try:
+            logger.info(f"Pinging self at {BASE_URL}")
+            response = requests.get(f"{BASE_URL}/", timeout=10)
+            response.raise_for_status()
+            logger.info(f"Self-ping successful: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Self-ping failed: {str(e)}")
+        await asyncio.sleep(PING_INTERVAL)
 
 # ----------------- SETUP & RUN -----------------
 app = Application.builder().token(BOT_TOKEN).build()
@@ -433,6 +446,7 @@ app.add_handler(CommandHandler("my_team", cmd_my_team))
 app.add_handler(CommandHandler("withdraw", cmd_withdraw))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_withdraw_input))
 
+# ----------------- SETUP & RUN -----------------
 async def initialize_app():
     try:
         loop = asyncio.new_event_loop()
@@ -444,10 +458,11 @@ async def initialize_app():
             logger.info(f"Webhook set to {webhook_url}")
         else:
             logger.warning("BASE_URL not set. Running FastAPI server only. Use /set-webhook to configure Telegram webhook.")
+        # Start self-pinging task
+        asyncio.create_task(ping_self())
     except Exception as e:
         logger.error(f"Error initializing app: {e}")
         raise
-
 if __name__ == "__main__":
     missing = []
     for name in ["BOT_TOKEN", "NOWPAY_API_KEY", "NOWPAY_IPN_SECRET"]:
