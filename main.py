@@ -425,12 +425,21 @@ PING_INTERVAL = 240  # 4 minutes in seconds
 async def ping_self():
     while True:
         try:
-            logger.info(f"Pinging self at {BASE_URL}")
+            if not BASE_URL:
+                logger.error("BASE_URL is not set, cannot ping self")
+                await asyncio.sleep(PING_INTERVAL)
+                continue
+            current_time = dt.datetime.now(dt.UTC).strftime("%H:%M:%S UTC")
+            logger.info(f"Pinging self at {BASE_URL} at {current_time}")
             response = requests.get(f"{BASE_URL}/", timeout=10)
             response.raise_for_status()
-            logger.info(f"Self-ping successful: {response.status_code}")
+            logger.info(f"Self-ping successful: {response.status_code} at {current_time}")
+        except requests.exceptions.Timeout:
+            logger.error(f"Self-ping timed out for {BASE_URL} at {current_time}")
+        except requests.exceptions.ConnectionError:
+            logger.error(f"Self-ping connection error for {BASE_URL} at {current_time}")
         except Exception as e:
-            logger.error(f"Self-ping failed: {str(e)}")
+            logger.error(f"Self-ping failed: {str(e)} at {current_time}")
         await asyncio.sleep(PING_INTERVAL)
 
 # ----------------- SETUP & RUN -----------------
