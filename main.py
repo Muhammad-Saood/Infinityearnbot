@@ -418,6 +418,7 @@ async def handle_withdraw_input(update: Update, context: ContextTypes.DEFAULT_TY
         except ValueError:
             await update.message.reply_text("Invalid amount. Please enter a valid number.")
             user["withdraw_state"] = "amount"
+            
             # ----------------- SELF-PINGING TASK -----------------
 PING_INTERVAL = 240  # 4 minutes in seconds
 
@@ -446,7 +447,6 @@ app.add_handler(CommandHandler("my_team", cmd_my_team))
 app.add_handler(CommandHandler("withdraw", cmd_withdraw))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_withdraw_input))
 
-# ----------------- SETUP & RUN -----------------
 async def initialize_app():
     try:
         loop = asyncio.new_event_loop()
