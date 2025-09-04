@@ -479,8 +479,6 @@ async def initialize_app():
             logger.info(f"Webhook set to {webhook_url}")
         else:
             logger.warning("BASE_URL not set. Running FastAPI server only. Use /set-webhook to configure Telegram webhook.")
-        # Start self-pinging task
-        asyncio.create_task(ping_self())
     except Exception as e:
         logger.error(f"Error initializing app: {e}")
         raise
